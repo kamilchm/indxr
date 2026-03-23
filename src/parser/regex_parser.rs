@@ -35,6 +35,17 @@ impl LanguageParser for RegexParser {
             Language::Markdown => parse_markdown(content),
             Language::Protobuf => parse_protobuf(content),
             Language::GraphQL => parse_graphql(content),
+            Language::Ruby => parse_ruby(content),
+            Language::Kotlin => parse_kotlin(content),
+            Language::Swift => parse_swift(content),
+            Language::CSharp => parse_csharp(content),
+            Language::ObjectiveC => parse_objc(content),
+            Language::Xml => parse_xml(content),
+            Language::Html => parse_html(content),
+            Language::Css => parse_css(content),
+            Language::Gradle => parse_gradle(content),
+            Language::Cmake => parse_cmake(content),
+            Language::Properties => parse_properties(content),
             _ => (Vec::new(), Vec::new()),
         };
 
@@ -62,7 +73,7 @@ fn parse_shell(content: &str) -> (Vec<Import>, Vec<Declaration>) {
     let re_func3 = Regex::new(r"^([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)\s*\{?").unwrap();
     let re_export = Regex::new(r"^export\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)").unwrap();
     let re_alias = Regex::new(r"^alias\s+([A-Za-z_][A-Za-z0-9_\-]*)=").unwrap();
-    let re_source = Regex::new(r"^(?:source|\.\s+)\s+(.+)$").unwrap();
+    let re_source = Regex::new(r"^(?:source\s+|\.\s+)(.+)$").unwrap();
 
     for (line_num, line) in content.lines().enumerate() {
         let trimmed = line.trim();
@@ -1151,8 +1162,1640 @@ fn parse_graphql(content: &str) -> (Vec<Import>, Vec<Declaration>) {
 }
 
 // ---------------------------------------------------------------------------
+// Ruby parser
+// ---------------------------------------------------------------------------
+
+fn parse_ruby(content: &str) -> (Vec<Import>, Vec<Declaration>) {
+    let mut imports = Vec::new();
+    let mut declarations: Vec<Declaration> = Vec::new();
+
+    let re_require = Regex::new(r#"^(?:require|require_relative|load)\s+['"]([^'"]+)['"]"#).unwrap();
+    let re_gem = Regex::new(r#"^\s*gem\s+['"]([^'"]+)['"]"#).unwrap();
+    let re_source = Regex::new(r#"^\s*source\s+['"]([^'"]+)['"]"#).unwrap();
+    let re_class = Regex::new(r"^(\s*)class\s+([A-Z]\w*)(?:\s*<\s*(\S+))?").unwrap();
+    let re_module = Regex::new(r"^(\s*)module\s+([A-Z]\w*)").unwrap();
+    let re_def = Regex::new(r"^(\s*)def\s+(self\.)?([A-Za-z_]\w*[?!=]?)(?:\(([^)]*)\))?").unwrap();
+    let re_constant = Regex::new(r"^(\s*)([A-Z][A-Z0-9_]+)\s*=").unwrap();
+    let re_attr = Regex::new(r"^\s*(?:attr_accessor|attr_reader|attr_writer)\s+(.+)$").unwrap();
+    let re_include = Regex::new(r"^\s*(?:include|extend|prepend)\s+(\S+)").unwrap();
+
+    // Track class/module nesting for parent-child
+    let mut container_stack: Vec<(usize, usize)> = Vec::new(); // (indent_level, decl_index)
+
+    for (line_num, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        // require / require_relative
+        if let Some(caps) = re_require.captures(trimmed) {
+            imports.push(Import {
+                text: caps[1].to_string(),
+            });
+            continue;
+        }
+
+        // gem 'name' (Gemfile)
+        if let Some(caps) = re_gem.captures(trimmed) {
+            imports.push(Import {
+                text: caps[1].to_string(),
+            });
+            continue;
+        }
+
+        // source 'url' (Gemfile)
+        if let Some(caps) = re_source.captures(trimmed) {
+            declarations.push(Declaration::new(
+                DeclKind::ConfigKey,
+                "source".to_string(),
+                format!("source '{}'", &caps[1]),
+                Visibility::Public,
+                line_num + 1,
+            ));
+            continue;
+        }
+
+        let indent = line.len() - line.trim_start().len();
+
+        // Pop containers that are at the same or deeper indent
+        while container_stack.last().map(|(i, _)| *i >= indent).unwrap_or(false) {
+            container_stack.pop();
+        }
+
+        // class ClassName < SuperClass
+        if let Some(caps) = re_class.captures(line) {
+            let name = caps[2].to_string();
+            let sig = if let Some(parent) = caps.get(3) {
+                format!("class {} < {}", name, parent.as_str())
+            } else {
+                format!("class {}", name)
+            };
+            let decl = Declaration::new(
+                DeclKind::Class,
+                name,
+                sig,
+                Visibility::Public,
+                line_num + 1,
+            );
+            let idx = if let Some((_, parent_idx)) = container_stack.last() {
+                declarations[*parent_idx].children.push(decl);
+                // Return the index within parent's children (we won't nest deeper from children)
+                // For simplicity, push to top-level and track there
+                declarations.len() // won't be used for deeper nesting from children
+            } else {
+                let idx = declarations.len();
+                declarations.push(decl);
+                idx
+            };
+            // Only track top-level containers for nesting
+            if container_stack.is_empty() {
+                container_stack.push((indent, idx));
+            }
+            continue;
+        }
+
+        // module ModuleName
+        if let Some(caps) = re_module.captures(line) {
+            let name = caps[2].to_string();
+            let decl = Declaration::new(
+                DeclKind::Module,
+                name.clone(),
+                format!("module {}", name),
+                Visibility::Public,
+                line_num + 1,
+            );
+            if let Some((_, parent_idx)) = container_stack.last() {
+                declarations[*parent_idx].children.push(decl);
+            } else {
+                let idx = declarations.len();
+                declarations.push(decl);
+                container_stack.push((indent, idx));
+            }
+            continue;
+        }
+
+        // def method_name(args) / def self.method_name(args)
+        if let Some(caps) = re_def.captures(line) {
+            let is_class_method = caps.get(2).is_some();
+            let name = caps[3].to_string();
+            let params = caps.get(4).map(|m| m.as_str()).unwrap_or("");
+            let prefix = if is_class_method { "def self." } else { "def " };
+            let sig = if params.is_empty() {
+                format!("{}{}", prefix, name)
+            } else {
+                format!("{}{}({})", prefix, name, params)
+            };
+            let vis = if name.starts_with('_') {
+                Visibility::Private
+            } else {
+                Visibility::Public
+            };
+            let decl = Declaration::new(DeclKind::Method, name, sig, vis, line_num + 1);
+            if let Some((_, parent_idx)) = container_stack.last() {
+                declarations[*parent_idx].children.push(decl);
+            } else {
+                // Top-level function
+                declarations.push(Declaration::new(
+                    decl.kind,
+                    decl.name,
+                    decl.signature,
+                    decl.visibility,
+                    decl.line,
+                ));
+            }
+            continue;
+        }
+
+        // CONSTANT = value
+        if let Some(caps) = re_constant.captures(line) {
+            let name = caps[2].to_string();
+            let decl = Declaration::new(
+                DeclKind::Constant,
+                name.clone(),
+                format!("{} = ...", name),
+                Visibility::Public,
+                line_num + 1,
+            );
+            if let Some((_, parent_idx)) = container_stack.last() {
+                declarations[*parent_idx].children.push(decl);
+            } else {
+                declarations.push(decl);
+            }
+            continue;
+        }
+
+        // attr_accessor :name, :email
+        if let Some(caps) = re_attr.captures(trimmed) {
+            let attrs_str = caps[1].to_string();
+            for attr in attrs_str.split(',') {
+                let attr = attr.trim().trim_start_matches(':');
+                if !attr.is_empty() {
+                    let decl = Declaration::new(
+                        DeclKind::Field,
+                        attr.to_string(),
+                        format!("attr {}", attr),
+                        Visibility::Public,
+                        line_num + 1,
+                    );
+                    if let Some((_, parent_idx)) = container_stack.last() {
+                        declarations[*parent_idx].children.push(decl);
+                    }
+                }
+            }
+            continue;
+        }
+
+        // include/extend/prepend Module
+        if let Some(caps) = re_include.captures(trimmed) {
+            imports.push(Import {
+                text: caps[1].to_string(),
+            });
+        }
+    }
+
+    (imports, declarations)
+}
+
+// ---------------------------------------------------------------------------
+// Kotlin parser
+// ---------------------------------------------------------------------------
+
+fn parse_kotlin(content: &str) -> (Vec<Import>, Vec<Declaration>) {
+    let mut imports = Vec::new();
+    let mut declarations = Vec::new();
+
+    let re_import = Regex::new(r"^import\s+(.+)$").unwrap();
+    let re_package = Regex::new(r"^package\s+(.+)$").unwrap();
+    let re_class = Regex::new(
+        r"^(?:\s*)(?:(?:public|private|protected|internal|abstract|open|sealed|data|inner|value|annotation|enum)\s+)*(?:class|object)\s+(\w+)",
+    )
+    .unwrap();
+    let re_interface = Regex::new(
+        r"^(?:\s*)(?:(?:public|private|protected|internal|sealed|fun)\s+)*interface\s+(\w+)",
+    )
+    .unwrap();
+    let re_fun = Regex::new(
+        r"^(?:\s*)(?:(?:public|private|protected|internal|override|open|abstract|suspend|inline|tailrec|operator|infix|external)\s+)*fun\s+(?:<[^>]+>\s+)?(?:(\w+)\.)?(\w+)\s*\(([^)]*)\)",
+    )
+    .unwrap();
+    let re_val = Regex::new(
+        r"^(?:\s*)(?:(?:public|private|protected|internal|override|const|lateinit)\s+)*(?:val|var)\s+(\w+)\s*(?::\s*(\S+))?",
+    )
+    .unwrap();
+    let re_typealias = Regex::new(r"^\s*typealias\s+(\w+)\s*=\s*(.+)$").unwrap();
+    let re_companion = Regex::new(r"^\s*companion\s+object").unwrap();
+
+    let mut brace_depth: i32 = 0;
+    let mut container_stack: Vec<(i32, usize)> = Vec::new(); // (brace_depth_at_open, decl_index)
+
+    for (line_num, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with("*") {
+            // Count braces even in blank/comment lines for tracking
+            for ch in trimmed.chars() {
+                match ch {
+                    '{' => brace_depth += 1,
+                    '}' => brace_depth -= 1,
+                    _ => {}
+                }
+            }
+            // Pop containers
+            while container_stack.last().map(|(d, _)| brace_depth <= *d).unwrap_or(false) {
+                container_stack.pop();
+            }
+            continue;
+        }
+
+        // package
+        if let Some(caps) = re_package.captures(trimmed) {
+            imports.push(Import {
+                text: format!("package {}", caps[1].trim()),
+            });
+            count_braces(trimmed, &mut brace_depth);
+            pop_containers(&mut container_stack, brace_depth);
+            continue;
+        }
+
+        // import
+        if let Some(caps) = re_import.captures(trimmed) {
+            imports.push(Import {
+                text: caps[1].trim().to_string(),
+            });
+            count_braces(trimmed, &mut brace_depth);
+            pop_containers(&mut container_stack, brace_depth);
+            continue;
+        }
+
+        // Skip companion object (don't treat as a named container)
+        if re_companion.is_match(trimmed) {
+            count_braces(trimmed, &mut brace_depth);
+            pop_containers(&mut container_stack, brace_depth);
+            continue;
+        }
+
+        // interface
+        if let Some(caps) = re_interface.captures(line) {
+            let name = caps[1].to_string();
+            let decl = Declaration::new(
+                DeclKind::Interface,
+                name.clone(),
+                format!("interface {}", name),
+                Visibility::Public,
+                line_num + 1,
+            );
+            let idx = declarations.len();
+            declarations.push(decl);
+            let open_depth = brace_depth;
+            count_braces(trimmed, &mut brace_depth);
+            if brace_depth > open_depth {
+                container_stack.push((open_depth, idx));
+            }
+            pop_containers(&mut container_stack, brace_depth);
+            continue;
+        }
+
+        // class / object / data class / enum class / sealed class
+        if let Some(caps) = re_class.captures(line) {
+            let name = caps[1].to_string();
+            let kind = if trimmed.contains("enum ") {
+                DeclKind::Enum
+            } else if trimmed.contains("object ") && !trimmed.contains("companion") {
+                DeclKind::Module
+            } else {
+                DeclKind::Class
+            };
+            let sig_prefix = if trimmed.contains("data class") {
+                "data class"
+            } else if trimmed.contains("sealed class") {
+                "sealed class"
+            } else if trimmed.contains("enum class") {
+                "enum class"
+            } else if trimmed.contains("abstract class") {
+                "abstract class"
+            } else if trimmed.contains("object ") {
+                "object"
+            } else {
+                "class"
+            };
+            let decl = Declaration::new(
+                kind,
+                name.clone(),
+                format!("{} {}", sig_prefix, name),
+                Visibility::Public,
+                line_num + 1,
+            );
+            let idx = if let Some((_, parent_idx)) = container_stack.last() {
+                declarations[*parent_idx].children.push(decl);
+                declarations[*parent_idx].children.len() - 1 // not usable as top-level index
+            } else {
+                let idx = declarations.len();
+                declarations.push(decl);
+                idx
+            };
+            let open_depth = brace_depth;
+            count_braces(trimmed, &mut brace_depth);
+            if brace_depth > open_depth && container_stack.is_empty() {
+                container_stack.push((open_depth, idx));
+            }
+            pop_containers(&mut container_stack, brace_depth);
+            continue;
+        }
+
+        // fun
+        if let Some(caps) = re_fun.captures(line) {
+            let name = caps[2].to_string();
+            let params = caps[3].to_string();
+            let sig = format!("fun {}({})", name, truncate_value(&params, 60));
+            let vis = if trimmed.starts_with("private") {
+                Visibility::Private
+            } else {
+                Visibility::Public
+            };
+            let decl = Declaration::new(DeclKind::Function, name, sig, vis, line_num + 1);
+            if let Some((_, parent_idx)) = container_stack.last() {
+                declarations[*parent_idx].children.push(decl);
+            } else {
+                declarations.push(decl);
+            }
+            count_braces(trimmed, &mut brace_depth);
+            pop_containers(&mut container_stack, brace_depth);
+            continue;
+        }
+
+        // typealias
+        if let Some(caps) = re_typealias.captures(trimmed) {
+            let name = caps[1].to_string();
+            let target = caps[2].to_string();
+            declarations.push(Declaration::new(
+                DeclKind::TypeAlias,
+                name.clone(),
+                format!("typealias {} = {}", name, truncate_value(&target, 40)),
+                Visibility::Public,
+                line_num + 1,
+            ));
+            count_braces(trimmed, &mut brace_depth);
+            pop_containers(&mut container_stack, brace_depth);
+            continue;
+        }
+
+        // val / var (only at top-level or class-level, skip local variables)
+        if brace_depth <= 1 {
+            if let Some(caps) = re_val.captures(line) {
+                let name = caps[1].to_string();
+                let type_ann = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+                let keyword = if trimmed.contains("const ") || trimmed.starts_with("val ") || trimmed.contains(" val ") {
+                    "val"
+                } else {
+                    "var"
+                };
+                let sig = if type_ann.is_empty() {
+                    format!("{} {}", keyword, name)
+                } else {
+                    format!("{} {}: {}", keyword, name, type_ann)
+                };
+                let decl = Declaration::new(DeclKind::Field, name, sig, Visibility::Public, line_num + 1);
+                if let Some((_, parent_idx)) = container_stack.last() {
+                    declarations[*parent_idx].children.push(decl);
+                } else {
+                    declarations.push(decl);
+                }
+            }
+        }
+
+        count_braces(trimmed, &mut brace_depth);
+        pop_containers(&mut container_stack, brace_depth);
+    }
+
+    (imports, declarations)
+}
+
+// ---------------------------------------------------------------------------
+// Swift parser
+// ---------------------------------------------------------------------------
+
+fn parse_swift(content: &str) -> (Vec<Import>, Vec<Declaration>) {
+    let mut imports = Vec::new();
+    let mut declarations = Vec::new();
+
+    let re_import = Regex::new(r"^import\s+(\S+)").unwrap();
+    let re_class = Regex::new(
+        r"^(?:\s*)(?:(?:public|private|internal|fileprivate|open|final)\s+)*class\s+(\w+)",
+    )
+    .unwrap();
+    let re_struct = Regex::new(
+        r"^(?:\s*)(?:(?:public|private|internal|fileprivate)\s+)*struct\s+(\w+)",
+    )
+    .unwrap();
+    let re_protocol = Regex::new(
+        r"^(?:\s*)(?:(?:public|private|internal|fileprivate)\s+)*protocol\s+(\w+)",
+    )
+    .unwrap();
+    let re_enum = Regex::new(
+        r"^(?:\s*)(?:(?:public|private|internal|fileprivate|indirect)\s+)*enum\s+(\w+)",
+    )
+    .unwrap();
+    let re_extension = Regex::new(
+        r"^(?:\s*)(?:(?:public|private|internal|fileprivate)\s+)*extension\s+(\w+)",
+    )
+    .unwrap();
+    let re_func = Regex::new(
+        r"^(?:\s*)(?:(?:public|private|internal|fileprivate|open|override|static|class|mutating|@\w+)\s+)*func\s+(\w+)\s*(?:<[^>]+>)?\s*\(([^)]*)\)",
+    )
+    .unwrap();
+    let re_typealias = Regex::new(
+        r"^(?:\s*)(?:(?:public|private|internal|fileprivate)\s+)*typealias\s+(\w+)\s*=\s*(.+)$",
+    )
+    .unwrap();
+    let re_let = Regex::new(
+        r"^(?:\s*)(?:(?:public|private|internal|fileprivate|static|class|lazy)\s+)*(?:let|var)\s+(\w+)\s*(?::\s*(\S+))?",
+    )
+    .unwrap();
+
+    let mut brace_depth: i32 = 0;
+    let mut container_stack: Vec<(i32, usize)> = Vec::new();
+
+    for (line_num, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with("*") {
+            count_braces(trimmed, &mut brace_depth);
+            pop_containers(&mut container_stack, brace_depth);
+            continue;
+        }
+
+        // import
+        if let Some(caps) = re_import.captures(trimmed) {
+            imports.push(Import {
+                text: caps[1].to_string(),
+            });
+            continue;
+        }
+
+        // protocol
+        if let Some(caps) = re_protocol.captures(line) {
+            let name = caps[1].to_string();
+            let decl = Declaration::new(
+                DeclKind::Interface,
+                name.clone(),
+                format!("protocol {}", name),
+                Visibility::Public,
+                line_num + 1,
+            );
+            let idx = declarations.len();
+            declarations.push(decl);
+            let open_depth = brace_depth;
+            count_braces(trimmed, &mut brace_depth);
+            if brace_depth > open_depth {
+                container_stack.push((open_depth, idx));
+            }
+            pop_containers(&mut container_stack, brace_depth);
+            continue;
+        }
+
+        // class
+        if let Some(caps) = re_class.captures(line) {
+            let name = caps[1].to_string();
+            let decl = Declaration::new(
+                DeclKind::Class,
+                name.clone(),
+                format!("class {}", name),
+                Visibility::Public,
+                line_num + 1,
+            );
+            let idx = declarations.len();
+            declarations.push(decl);
+            let open_depth = brace_depth;
+            count_braces(trimmed, &mut brace_depth);
+            if brace_depth > open_depth {
+                container_stack.push((open_depth, idx));
+            }
+            pop_containers(&mut container_stack, brace_depth);
+            continue;
+        }
+
+        // struct
+        if let Some(caps) = re_struct.captures(line) {
+            let name = caps[1].to_string();
+            let decl = Declaration::new(
+                DeclKind::Struct,
+                name.clone(),
+                format!("struct {}", name),
+                Visibility::Public,
+                line_num + 1,
+            );
+            let idx = declarations.len();
+            declarations.push(decl);
+            let open_depth = brace_depth;
+            count_braces(trimmed, &mut brace_depth);
+            if brace_depth > open_depth {
+                container_stack.push((open_depth, idx));
+            }
+            pop_containers(&mut container_stack, brace_depth);
+            continue;
+        }
+
+        // enum
+        if let Some(caps) = re_enum.captures(line) {
+            let name = caps[1].to_string();
+            let decl = Declaration::new(
+                DeclKind::Enum,
+                name.clone(),
+                format!("enum {}", name),
+                Visibility::Public,
+                line_num + 1,
+            );
+            let idx = declarations.len();
+            declarations.push(decl);
+            let open_depth = brace_depth;
+            count_braces(trimmed, &mut brace_depth);
+            if brace_depth > open_depth {
+                container_stack.push((open_depth, idx));
+            }
+            pop_containers(&mut container_stack, brace_depth);
+            continue;
+        }
+
+        // extension
+        if let Some(caps) = re_extension.captures(line) {
+            let name = caps[1].to_string();
+            let decl = Declaration::new(
+                DeclKind::Impl,
+                name.clone(),
+                format!("extension {}", name),
+                Visibility::Public,
+                line_num + 1,
+            );
+            let idx = declarations.len();
+            declarations.push(decl);
+            let open_depth = brace_depth;
+            count_braces(trimmed, &mut brace_depth);
+            if brace_depth > open_depth {
+                container_stack.push((open_depth, idx));
+            }
+            pop_containers(&mut container_stack, brace_depth);
+            continue;
+        }
+
+        // func
+        if let Some(caps) = re_func.captures(line) {
+            let name = caps[1].to_string();
+            let params = caps[2].to_string();
+            let sig = format!("func {}({})", name, truncate_value(&params, 60));
+            let vis = if trimmed.starts_with("private") || trimmed.starts_with("fileprivate") {
+                Visibility::Private
+            } else {
+                Visibility::Public
+            };
+            let decl = Declaration::new(DeclKind::Method, name, sig, vis, line_num + 1);
+            if let Some((_, parent_idx)) = container_stack.last() {
+                declarations[*parent_idx].children.push(decl);
+            } else {
+                declarations.push(decl);
+            }
+            count_braces(trimmed, &mut brace_depth);
+            pop_containers(&mut container_stack, brace_depth);
+            continue;
+        }
+
+        // typealias
+        if let Some(caps) = re_typealias.captures(line) {
+            let name = caps[1].to_string();
+            let target = caps[2].trim().to_string();
+            declarations.push(Declaration::new(
+                DeclKind::TypeAlias,
+                name.clone(),
+                format!("typealias {} = {}", name, truncate_value(&target, 40)),
+                Visibility::Public,
+                line_num + 1,
+            ));
+            count_braces(trimmed, &mut brace_depth);
+            pop_containers(&mut container_stack, brace_depth);
+            continue;
+        }
+
+        // top-level let/var (only outside function bodies)
+        if brace_depth <= 1 {
+            if let Some(caps) = re_let.captures(line) {
+                let name = caps[1].to_string();
+                // Skip common keywords that look like var names
+                if matches!(name.as_str(), "self" | "super" | "return" | "guard" | "if" | "else" | "switch" | "case") {
+                    count_braces(trimmed, &mut brace_depth);
+                    pop_containers(&mut container_stack, brace_depth);
+                    continue;
+                }
+                let type_ann = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+                let keyword = if trimmed.contains("let ") { "let" } else { "var" };
+                let sig = if type_ann.is_empty() {
+                    format!("{} {}", keyword, name)
+                } else {
+                    format!("{} {}: {}", keyword, name, type_ann)
+                };
+                let decl = Declaration::new(DeclKind::Field, name, sig, Visibility::Public, line_num + 1);
+                if let Some((_, parent_idx)) = container_stack.last() {
+                    declarations[*parent_idx].children.push(decl);
+                } else {
+                    declarations.push(decl);
+                }
+            }
+        }
+
+        count_braces(trimmed, &mut brace_depth);
+        pop_containers(&mut container_stack, brace_depth);
+    }
+
+    (imports, declarations)
+}
+
+// ---------------------------------------------------------------------------
+// C# parser
+// ---------------------------------------------------------------------------
+
+fn parse_csharp(content: &str) -> (Vec<Import>, Vec<Declaration>) {
+    let mut imports = Vec::new();
+    let mut declarations = Vec::new();
+
+    let re_using = Regex::new(r"^using\s+(?:static\s+)?([A-Za-z][\w.]*)\s*;").unwrap();
+    let re_namespace = Regex::new(r"^\s*namespace\s+([\w.]+)").unwrap();
+    let re_class = Regex::new(
+        r"^(?:\s*)(?:(?:public|private|protected|internal|abstract|sealed|static|partial)\s+)*class\s+(\w+)",
+    )
+    .unwrap();
+    let re_interface = Regex::new(
+        r"^(?:\s*)(?:(?:public|private|protected|internal|partial)\s+)*interface\s+(\w+)",
+    )
+    .unwrap();
+    let re_struct = Regex::new(
+        r"^(?:\s*)(?:(?:public|private|protected|internal|readonly|partial)\s+)*struct\s+(\w+)",
+    )
+    .unwrap();
+    let re_enum = Regex::new(
+        r"^(?:\s*)(?:(?:public|private|protected|internal)\s+)*enum\s+(\w+)",
+    )
+    .unwrap();
+    let re_method = Regex::new(
+        r"^(?:\s*)(?:(?:public|private|protected|internal|static|virtual|override|abstract|async|new|sealed|extern)\s+)*(?:[\w<>\[\]?,\s]+)\s+(\w+)\s*(?:<[^>]+>)?\s*\(([^)]*)\)",
+    )
+    .unwrap();
+    let mut brace_depth: i32 = 0;
+    let mut container_stack: Vec<(i32, usize)> = Vec::new();
+
+    for (line_num, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with("*") {
+            count_braces(trimmed, &mut brace_depth);
+            pop_containers(&mut container_stack, brace_depth);
+            continue;
+        }
+
+        // using
+        if let Some(caps) = re_using.captures(trimmed) {
+            imports.push(Import {
+                text: caps[1].to_string(),
+            });
+            continue;
+        }
+
+        // namespace
+        if let Some(caps) = re_namespace.captures(line) {
+            let name = caps[1].to_string();
+            let decl = Declaration::new(
+                DeclKind::Namespace,
+                name.clone(),
+                format!("namespace {}", name),
+                Visibility::Public,
+                line_num + 1,
+            );
+            let idx = declarations.len();
+            declarations.push(decl);
+            let open_depth = brace_depth;
+            count_braces(trimmed, &mut brace_depth);
+            if brace_depth > open_depth {
+                container_stack.push((open_depth, idx));
+            }
+            pop_containers(&mut container_stack, brace_depth);
+            continue;
+        }
+
+        // interface
+        if let Some(caps) = re_interface.captures(line) {
+            let name = caps[1].to_string();
+            let decl = Declaration::new(
+                DeclKind::Interface,
+                name.clone(),
+                format!("interface {}", name),
+                Visibility::Public,
+                line_num + 1,
+            );
+            let idx = if let Some((_, parent_idx)) = container_stack.last() {
+                declarations[*parent_idx].children.push(decl);
+                declarations[*parent_idx].children.len() - 1
+            } else {
+                let idx = declarations.len();
+                declarations.push(decl);
+                idx
+            };
+            let open_depth = brace_depth;
+            count_braces(trimmed, &mut brace_depth);
+            if brace_depth > open_depth && container_stack.is_empty() {
+                container_stack.push((open_depth, idx));
+            }
+            pop_containers(&mut container_stack, brace_depth);
+            continue;
+        }
+
+        // class
+        if let Some(caps) = re_class.captures(line) {
+            let name = caps[1].to_string();
+            let decl = Declaration::new(
+                DeclKind::Class,
+                name.clone(),
+                format!("class {}", name),
+                Visibility::Public,
+                line_num + 1,
+            );
+            let idx = if let Some((_, parent_idx)) = container_stack.last() {
+                declarations[*parent_idx].children.push(decl);
+                declarations[*parent_idx].children.len() - 1
+            } else {
+                let idx = declarations.len();
+                declarations.push(decl);
+                idx
+            };
+            let open_depth = brace_depth;
+            count_braces(trimmed, &mut brace_depth);
+            if brace_depth > open_depth && container_stack.is_empty() {
+                container_stack.push((open_depth, idx));
+            }
+            pop_containers(&mut container_stack, brace_depth);
+            continue;
+        }
+
+        // struct
+        if let Some(caps) = re_struct.captures(line) {
+            let name = caps[1].to_string();
+            let decl = Declaration::new(
+                DeclKind::Struct,
+                name.clone(),
+                format!("struct {}", name),
+                Visibility::Public,
+                line_num + 1,
+            );
+            if let Some((_, parent_idx)) = container_stack.last() {
+                declarations[*parent_idx].children.push(decl);
+            } else {
+                declarations.push(decl);
+            }
+            count_braces(trimmed, &mut brace_depth);
+            pop_containers(&mut container_stack, brace_depth);
+            continue;
+        }
+
+        // enum
+        if let Some(caps) = re_enum.captures(line) {
+            let name = caps[1].to_string();
+            let decl = Declaration::new(
+                DeclKind::Enum,
+                name.clone(),
+                format!("enum {}", name),
+                Visibility::Public,
+                line_num + 1,
+            );
+            if let Some((_, parent_idx)) = container_stack.last() {
+                declarations[*parent_idx].children.push(decl);
+            } else {
+                declarations.push(decl);
+            }
+            count_braces(trimmed, &mut brace_depth);
+            pop_containers(&mut container_stack, brace_depth);
+            continue;
+        }
+
+        // method (only inside containers)
+        if !container_stack.is_empty() {
+            if let Some(caps) = re_method.captures(line) {
+                let name = caps[1].to_string();
+                // Skip keywords that look like method names
+                if !matches!(
+                    name.as_str(),
+                    "if" | "for" | "while" | "switch" | "catch" | "using" | "lock" | "return"
+                        | "new" | "throw" | "typeof" | "sizeof" | "nameof" | "class" | "struct"
+                ) {
+                    let params = caps[2].to_string();
+                    let sig = format!("{}({})", name, truncate_value(&params, 60));
+                    let vis = if trimmed.starts_with("private") {
+                        Visibility::Private
+                    } else if trimmed.starts_with("protected") {
+                        Visibility::PublicCrate
+                    } else {
+                        Visibility::Public
+                    };
+                    let decl = Declaration::new(DeclKind::Method, name, sig, vis, line_num + 1);
+                    if let Some((_, parent_idx)) = container_stack.last() {
+                        declarations[*parent_idx].children.push(decl);
+                    }
+                }
+            }
+        }
+
+        count_braces(trimmed, &mut brace_depth);
+        pop_containers(&mut container_stack, brace_depth);
+    }
+
+    (imports, declarations)
+}
+
+// ---------------------------------------------------------------------------
+// Objective-C parser
+// ---------------------------------------------------------------------------
+
+fn parse_objc(content: &str) -> (Vec<Import>, Vec<Declaration>) {
+    let mut imports = Vec::new();
+    let mut declarations = Vec::new();
+
+    let re_import = Regex::new(r#"^#import\s+[<"]([^>"]+)[>"]"#).unwrap();
+    let re_include = Regex::new(r#"^#include\s+[<"]([^>"]+)[>"]"#).unwrap();
+    let re_interface = Regex::new(r"^@interface\s+(\w+)\s*(?::\s*(\w+))?").unwrap();
+    let re_implementation = Regex::new(r"^@implementation\s+(\w+)").unwrap();
+    let re_protocol_decl = Regex::new(r"^@protocol\s+(\w+)\s*(?:<|$)").unwrap();
+    let re_method = Regex::new(r"^([+-])\s*\(([^)]+)\)\s*(\w+)").unwrap();
+    let re_property = Regex::new(r"^@property\s*(?:\([^)]*\)\s*)?(\S+)\s*\*?\s*(\w+)\s*;").unwrap();
+
+    let mut current_container: Option<usize> = None;
+
+    for (line_num, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with("*") {
+            continue;
+        }
+
+        // #import / #include
+        if let Some(caps) = re_import.captures(trimmed) {
+            imports.push(Import {
+                text: caps[1].to_string(),
+            });
+            continue;
+        }
+        if let Some(caps) = re_include.captures(trimmed) {
+            imports.push(Import {
+                text: caps[1].to_string(),
+            });
+            continue;
+        }
+
+        // @interface ClassName : SuperClass
+        if let Some(caps) = re_interface.captures(trimmed) {
+            let name = caps[1].to_string();
+            let sig = if let Some(parent) = caps.get(2) {
+                format!("@interface {} : {}", name, parent.as_str())
+            } else {
+                format!("@interface {}", name)
+            };
+            let decl = Declaration::new(
+                DeclKind::Class,
+                name,
+                sig,
+                Visibility::Public,
+                line_num + 1,
+            );
+            let idx = declarations.len();
+            declarations.push(decl);
+            current_container = Some(idx);
+            continue;
+        }
+
+        // @implementation ClassName
+        if let Some(caps) = re_implementation.captures(trimmed) {
+            let name = caps[1].to_string();
+            // Try to find existing @interface for this class
+            let existing = declarations.iter().position(|d| d.name == name && d.kind == DeclKind::Class);
+            if let Some(idx) = existing {
+                current_container = Some(idx);
+            } else {
+                let decl = Declaration::new(
+                    DeclKind::Class,
+                    name.clone(),
+                    format!("@implementation {}", name),
+                    Visibility::Public,
+                    line_num + 1,
+                );
+                let idx = declarations.len();
+                declarations.push(decl);
+                current_container = Some(idx);
+            }
+            continue;
+        }
+
+        // @protocol ProtocolName
+        if let Some(caps) = re_protocol_decl.captures(trimmed) {
+            let name = caps[1].to_string();
+            let decl = Declaration::new(
+                DeclKind::Interface,
+                name.clone(),
+                format!("@protocol {}", name),
+                Visibility::Public,
+                line_num + 1,
+            );
+            let idx = declarations.len();
+            declarations.push(decl);
+            current_container = Some(idx);
+            continue;
+        }
+
+        // @end
+        if trimmed == "@end" {
+            current_container = None;
+            continue;
+        }
+
+        // Method: - (ReturnType)methodName or + (ReturnType)methodName
+        if let Some(caps) = re_method.captures(trimmed) {
+            let method_type = &caps[1]; // + or -
+            let return_type = caps[2].to_string();
+            let name = caps[3].to_string();
+            let sig = format!("{} ({}){}", method_type, return_type, name);
+            let decl = Declaration::new(
+                DeclKind::Method,
+                name,
+                sig,
+                Visibility::Public,
+                line_num + 1,
+            );
+            if let Some(parent_idx) = current_container {
+                declarations[parent_idx].children.push(decl);
+            } else {
+                declarations.push(decl);
+            }
+            continue;
+        }
+
+        // @property
+        if let Some(caps) = re_property.captures(trimmed) {
+            let prop_type = caps[1].to_string();
+            let name = caps[2].to_string();
+            let decl = Declaration::new(
+                DeclKind::Field,
+                name.clone(),
+                format!("{} {}", prop_type, name),
+                Visibility::Public,
+                line_num + 1,
+            );
+            if let Some(parent_idx) = current_container {
+                declarations[parent_idx].children.push(decl);
+            } else {
+                declarations.push(decl);
+            }
+        }
+    }
+
+    (imports, declarations)
+}
+
+// ---------------------------------------------------------------------------
+// XML parser
+// ---------------------------------------------------------------------------
+
+fn parse_xml(content: &str) -> (Vec<Import>, Vec<Declaration>) {
+    let imports = Vec::new();
+    let mut declarations = Vec::new();
+
+    let re_open_tag = Regex::new(r"<(\w[\w\-.]*)(?:[\s/>]|$)").unwrap();
+    let re_close_tag = Regex::new(r"</(\w[\w\-.]*)(?:[\s>]|$)").unwrap();
+
+    let mut seen_elements = std::collections::HashSet::new();
+    let mut depth: i32 = 0;
+    let mut in_comment = false;
+    // Track multiline opening tags: tag name and whether it's self-closing
+    let mut pending_open: Option<(String, usize)> = None; // (tag_name, line_num)
+
+    for (line_num, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Track comment state
+        if in_comment {
+            if trimmed.contains("-->") {
+                in_comment = false;
+            }
+            continue;
+        }
+        if trimmed.contains("<!--") {
+            if !trimmed.contains("-->") {
+                in_comment = true;
+            }
+            continue;
+        }
+
+        // Skip XML declaration and processing instructions
+        if trimmed.starts_with("<?") {
+            continue;
+        }
+
+        // If we're inside a multiline opening tag, check if this line closes it
+        if let Some((ref tag_name, tag_line)) = pending_open {
+            if trimmed.contains("/>") {
+                // Self-closing multiline tag — don't change depth
+                // But still extract the element if at appropriate depth
+                if depth <= 1 && !seen_elements.contains(tag_name) {
+                    seen_elements.insert(tag_name.clone());
+                    declarations.push(Declaration::new(
+                        DeclKind::ConfigKey,
+                        tag_name.clone(),
+                        format!("<{}>", tag_name),
+                        Visibility::Public,
+                        tag_line + 1,
+                    ));
+                }
+                pending_open = None;
+                continue;
+            } else if trimmed.contains('>') {
+                // Closing the opening tag — element opens, depth increments
+                if depth <= 1 && !seen_elements.contains(tag_name) {
+                    seen_elements.insert(tag_name.clone());
+                    declarations.push(Declaration::new(
+                        DeclKind::ConfigKey,
+                        tag_name.clone(),
+                        format!("<{}>", tag_name),
+                        Visibility::Public,
+                        tag_line + 1,
+                    ));
+                }
+                depth += 1;
+                pending_open = None;
+                // This line might also contain more tags after the >, fall through
+                // But for simplicity in XML, we'll continue
+                continue;
+            }
+            // Still inside multiline tag attributes
+            continue;
+        }
+
+        // Count opening and closing tags on this line
+        // Process closing tags
+        for _ in re_close_tag.captures_iter(trimmed) {
+            depth -= 1;
+        }
+
+        // Process opening tags
+        if !trimmed.starts_with("</") {
+            if let Some(caps) = re_open_tag.captures(trimmed) {
+                let tag = caps[1].to_string();
+
+                // Check if this is a self-closing tag
+                let is_self_closing = trimmed.contains("/>");
+
+                // Check if the tag's > is on this line
+                let has_closing_bracket = trimmed.contains('>');
+
+                if !is_self_closing && has_closing_bracket {
+                    // Normal single-line opening tag
+                    if depth <= 1 && !seen_elements.contains(&tag) {
+                        seen_elements.insert(tag.clone());
+                        declarations.push(Declaration::new(
+                            DeclKind::ConfigKey,
+                            tag.clone(),
+                            format!("<{}>", tag),
+                            Visibility::Public,
+                            line_num + 1,
+                        ));
+                    }
+                    depth += 1;
+                } else if is_self_closing {
+                    // Self-closing tag — extract but don't change depth
+                    if depth <= 1 && !seen_elements.contains(&tag) {
+                        seen_elements.insert(tag.clone());
+                        declarations.push(Declaration::new(
+                            DeclKind::ConfigKey,
+                            tag.clone(),
+                            format!("<{}>", tag),
+                            Visibility::Public,
+                            line_num + 1,
+                        ));
+                    }
+                } else {
+                    // Multiline opening tag — no > on this line
+                    pending_open = Some((tag, line_num));
+                }
+            }
+        }
+    }
+
+    (imports, declarations)
+}
+
+// ---------------------------------------------------------------------------
+// HTML parser
+// ---------------------------------------------------------------------------
+
+fn parse_html(content: &str) -> (Vec<Import>, Vec<Declaration>) {
+    let mut imports = Vec::new();
+    let mut declarations = Vec::new();
+
+    let re_tag = Regex::new(r"<(head|body|header|nav|main|section|article|aside|footer|form|table|script|style|template|slot|dialog)[\s>]").unwrap();
+    let re_id = Regex::new(r#"id\s*=\s*["']([^"']+)["']"#).unwrap();
+    let re_title = Regex::new(r"<title[^>]*>([^<]+)</title>").unwrap();
+    let re_link_rel = Regex::new(r#"<link\s+rel\s*=\s*["']stylesheet["'][^>]*href\s*=\s*["']([^"']+)["']"#).unwrap();
+    let re_script_src = Regex::new(r#"<script[^>]*src\s*=\s*["']([^"']+)["']"#).unwrap();
+
+    for (line_num, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Semantic section tags
+        if let Some(caps) = re_tag.captures(trimmed) {
+            let tag = caps[1].to_string();
+            let mut name = tag.clone();
+            // If it has an id, use that
+            if let Some(id_caps) = re_id.captures(trimmed) {
+                name = format!("{}#{}", tag, &id_caps[1]);
+            }
+            declarations.push(Declaration::new(
+                DeclKind::ConfigKey,
+                name.clone(),
+                format!("<{}>", name),
+                Visibility::Public,
+                line_num + 1,
+            ));
+        }
+
+        // <title>
+        if let Some(caps) = re_title.captures(trimmed) {
+            declarations.push(Declaration::new(
+                DeclKind::ConfigKey,
+                "title".to_string(),
+                format!("title: {}", truncate_value(&caps[1], 60)),
+                Visibility::Public,
+                line_num + 1,
+            ));
+        }
+
+        // External resources as imports
+        if let Some(caps) = re_link_rel.captures(trimmed) {
+            imports.push(Import {
+                text: caps[1].to_string(),
+            });
+        }
+        if let Some(caps) = re_script_src.captures(trimmed) {
+            imports.push(Import {
+                text: caps[1].to_string(),
+            });
+        }
+    }
+
+    (imports, declarations)
+}
+
+// ---------------------------------------------------------------------------
+// CSS parser
+// ---------------------------------------------------------------------------
+
+fn parse_css(content: &str) -> (Vec<Import>, Vec<Declaration>) {
+    let mut imports = Vec::new();
+    let mut declarations = Vec::new();
+
+    let re_import = Regex::new(r#"^@import\s+(?:url\()?['"]?([^'")]+)['"]?\)?\s*;"#).unwrap();
+    let re_at_rule = Regex::new(r"^@(media|keyframes|font-face|supports|layer|container)\s*(.*)$").unwrap();
+    let re_selector = Regex::new(r"^([.#]?[A-Za-z_\-][\w\-.*#:>\s,\[\]=~|^$]+)\s*\{").unwrap();
+    let re_css_var = Regex::new(r"^\s*--([A-Za-z][\w-]*)\s*:").unwrap();
+
+    let mut brace_depth: i32 = 0;
+    let mut in_comment = false;
+
+    for (line_num, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Track block comments
+        if in_comment {
+            if trimmed.contains("*/") {
+                in_comment = false;
+            }
+            continue;
+        }
+        if trimmed.starts_with("/*") {
+            if !trimmed.contains("*/") {
+                in_comment = true;
+            }
+            continue;
+        }
+
+        // @import
+        if let Some(caps) = re_import.captures(trimmed) {
+            imports.push(Import {
+                text: caps[1].to_string(),
+            });
+            continue;
+        }
+
+        // @-rules (only at top level)
+        if brace_depth == 0 {
+            if let Some(caps) = re_at_rule.captures(trimmed) {
+                let rule = caps[1].to_string();
+                let detail = caps[2].trim_end_matches('{').trim().to_string();
+                let name = if detail.is_empty() {
+                    format!("@{}", rule)
+                } else {
+                    format!("@{} {}", rule, truncate_value(&detail, 50))
+                };
+                declarations.push(Declaration::new(
+                    DeclKind::ConfigKey,
+                    name.clone(),
+                    name,
+                    Visibility::Public,
+                    line_num + 1,
+                ));
+                count_braces(trimmed, &mut brace_depth);
+                continue;
+            }
+
+            // Selectors at top level
+            if let Some(caps) = re_selector.captures(trimmed) {
+                let selector = caps[1].trim().to_string();
+                declarations.push(Declaration::new(
+                    DeclKind::Class,
+                    selector.clone(),
+                    selector,
+                    Visibility::Public,
+                    line_num + 1,
+                ));
+            }
+        }
+
+        // CSS custom properties (variables)
+        if let Some(caps) = re_css_var.captures(trimmed) {
+            let name = caps[1].to_string();
+            declarations.push(Declaration::new(
+                DeclKind::Constant,
+                format!("--{}", name),
+                trimmed.trim_end_matches(';').to_string(),
+                Visibility::Public,
+                line_num + 1,
+            ));
+        }
+
+        count_braces(trimmed, &mut brace_depth);
+    }
+
+    (imports, declarations)
+}
+
+// ---------------------------------------------------------------------------
+// Gradle parser
+// ---------------------------------------------------------------------------
+
+fn parse_gradle(content: &str) -> (Vec<Import>, Vec<Declaration>) {
+    let imports = Vec::new();
+    let mut declarations = Vec::new();
+
+    let re_plugin_id = Regex::new(r#"^\s*id\s*(?:[('"]\s*)*([^'"()\s]+)"#).unwrap();
+    let re_plugin_id_inline = Regex::new(r#"id\s*(?:[('"]\s*)*([^'"()\s]+)"#).unwrap();
+    let re_plugin_apply = Regex::new(r#"^\s*apply\s+plugin:\s*['"]([^'"]+)['"]"#).unwrap();
+    let re_top_block = Regex::new(r"^(\w+)\s*(?:\([^)]*\)\s*)?\{").unwrap();
+    let re_task = Regex::new(r#"^\s*(?:task\s+|tasks\.register\s*\(\s*['"])(\w+)"#).unwrap();
+    let re_def = Regex::new(r"^\s*(?:def|val|var)\s+(\w+)\s*=").unwrap();
+
+    let mut brace_depth: i32 = 0;
+    let mut in_plugins = false;
+
+    for (line_num, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with("*") {
+            count_braces(trimmed, &mut brace_depth);
+            continue;
+        }
+
+        // Top-level blocks
+        if brace_depth == 0 {
+            if let Some(caps) = re_top_block.captures(trimmed) {
+                let name = caps[1].to_string();
+                in_plugins = name == "plugins";
+                declarations.push(Declaration::new(
+                    DeclKind::ConfigKey,
+                    name.clone(),
+                    format!("{} {{ }}", name),
+                    Visibility::Public,
+                    line_num + 1,
+                ));
+                // Extract plugin IDs from the same line (single-line plugins { id("...") })
+                if in_plugins {
+                    for pcaps in re_plugin_id_inline.captures_iter(trimmed) {
+                        let id = pcaps[1].to_string();
+                        declarations.push(Declaration::new(
+                            DeclKind::ConfigKey,
+                            id.clone(),
+                            format!("plugin: {}", id),
+                            Visibility::Public,
+                            line_num + 1,
+                        ));
+                    }
+                }
+                count_braces(trimmed, &mut brace_depth);
+                continue;
+            }
+        }
+
+        // Plugin ids (multi-line plugins block)
+        if in_plugins {
+            if let Some(caps) = re_plugin_id.captures(trimmed) {
+                let id = caps[1].to_string();
+                declarations.push(Declaration::new(
+                    DeclKind::ConfigKey,
+                    id.clone(),
+                    format!("plugin: {}", id),
+                    Visibility::Public,
+                    line_num + 1,
+                ));
+            }
+        }
+
+        // apply plugin:
+        if let Some(caps) = re_plugin_apply.captures(trimmed) {
+            let id = caps[1].to_string();
+            declarations.push(Declaration::new(
+                DeclKind::ConfigKey,
+                id.clone(),
+                format!("plugin: {}", id),
+                Visibility::Public,
+                line_num + 1,
+            ));
+            count_braces(trimmed, &mut brace_depth);
+            continue;
+        }
+
+        // task
+        if let Some(caps) = re_task.captures(trimmed) {
+            let name = caps[1].to_string();
+            declarations.push(Declaration::new(
+                DeclKind::Function,
+                name.clone(),
+                format!("task {}", name),
+                Visibility::Public,
+                line_num + 1,
+            ));
+            count_braces(trimmed, &mut brace_depth);
+            continue;
+        }
+
+        // def / val / var
+        if brace_depth <= 1 {
+            if let Some(caps) = re_def.captures(trimmed) {
+                let name = caps[1].to_string();
+                declarations.push(Declaration::new(
+                    DeclKind::Constant,
+                    name.clone(),
+                    truncate_value(trimmed, 80),
+                    Visibility::Public,
+                    line_num + 1,
+                ));
+                count_braces(trimmed, &mut brace_depth);
+                continue;
+            }
+        }
+
+        count_braces(trimmed, &mut brace_depth);
+
+        // Track when we leave top-level blocks
+        if brace_depth == 0 {
+            in_plugins = false;
+        }
+    }
+
+    (imports, declarations)
+}
+
+// ---------------------------------------------------------------------------
+// CMake parser
+// ---------------------------------------------------------------------------
+
+fn parse_cmake(content: &str) -> (Vec<Import>, Vec<Declaration>) {
+    let mut imports = Vec::new();
+    let mut declarations = Vec::new();
+
+    let re_project = Regex::new(r"(?i)^\s*project\s*\(\s*(\w+)").unwrap();
+    let re_add_exe = Regex::new(r"(?i)^\s*add_executable\s*\(\s*(\w+)").unwrap();
+    let re_add_lib = Regex::new(r"(?i)^\s*add_library\s*\(\s*(\w+)").unwrap();
+    let re_function = Regex::new(r"(?i)^\s*function\s*\(\s*(\w+)").unwrap();
+    let re_macro = Regex::new(r"(?i)^\s*macro\s*\(\s*(\w+)").unwrap();
+    let re_option = Regex::new(r#"(?i)^\s*option\s*\(\s*(\w+)\s+"([^"]*)"#).unwrap();
+    let re_set = Regex::new(r"(?i)^\s*set\s*\(\s*(\w+)").unwrap();
+    let re_find = Regex::new(r"(?i)^\s*find_package\s*\(\s*(\w+)").unwrap();
+    let re_add_subdir = Regex::new(r"(?i)^\s*add_subdirectory\s*\(\s*(\S+)").unwrap();
+
+    for (line_num, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        // project()
+        if let Some(caps) = re_project.captures(trimmed) {
+            let name = caps[1].to_string();
+            declarations.push(Declaration::new(
+                DeclKind::Module,
+                name.clone(),
+                format!("project({})", name),
+                Visibility::Public,
+                line_num + 1,
+            ));
+            continue;
+        }
+
+        // add_executable()
+        if let Some(caps) = re_add_exe.captures(trimmed) {
+            let name = caps[1].to_string();
+            declarations.push(Declaration::new(
+                DeclKind::Function,
+                name.clone(),
+                format!("add_executable({})", name),
+                Visibility::Public,
+                line_num + 1,
+            ));
+            continue;
+        }
+
+        // add_library()
+        if let Some(caps) = re_add_lib.captures(trimmed) {
+            let name = caps[1].to_string();
+            declarations.push(Declaration::new(
+                DeclKind::Module,
+                name.clone(),
+                format!("add_library({})", name),
+                Visibility::Public,
+                line_num + 1,
+            ));
+            continue;
+        }
+
+        // function()
+        if let Some(caps) = re_function.captures(trimmed) {
+            let name = caps[1].to_string();
+            declarations.push(Declaration::new(
+                DeclKind::Function,
+                name.clone(),
+                format!("function({})", name),
+                Visibility::Public,
+                line_num + 1,
+            ));
+            continue;
+        }
+
+        // macro()
+        if let Some(caps) = re_macro.captures(trimmed) {
+            let name = caps[1].to_string();
+            declarations.push(Declaration::new(
+                DeclKind::Macro,
+                name.clone(),
+                format!("macro({})", name),
+                Visibility::Public,
+                line_num + 1,
+            ));
+            continue;
+        }
+
+        // option()
+        if let Some(caps) = re_option.captures(trimmed) {
+            let name = caps[1].to_string();
+            let desc = caps[2].to_string();
+            declarations.push(Declaration::new(
+                DeclKind::ConfigKey,
+                name.clone(),
+                format!("option({} \"{}\")", name, truncate_value(&desc, 50)),
+                Visibility::Public,
+                line_num + 1,
+            ));
+            continue;
+        }
+
+        // set() - only for uppercase variables (conventions for cache/options)
+        if let Some(caps) = re_set.captures(trimmed) {
+            let name = caps[1].to_string();
+            if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                declarations.push(Declaration::new(
+                    DeclKind::Constant,
+                    name.clone(),
+                    format!("set({})", name),
+                    Visibility::Public,
+                    line_num + 1,
+                ));
+            }
+            continue;
+        }
+
+        // find_package()
+        if let Some(caps) = re_find.captures(trimmed) {
+            imports.push(Import {
+                text: caps[1].to_string(),
+            });
+            continue;
+        }
+
+        // add_subdirectory()
+        if let Some(caps) = re_add_subdir.captures(trimmed) {
+            imports.push(Import {
+                text: caps[1].trim_end_matches(')').to_string(),
+            });
+        }
+    }
+
+    (imports, declarations)
+}
+
+// ---------------------------------------------------------------------------
+// Properties parser (.properties files)
+// ---------------------------------------------------------------------------
+
+fn parse_properties(content: &str) -> (Vec<Import>, Vec<Declaration>) {
+    let imports = Vec::new();
+    let mut declarations = Vec::new();
+
+    let re_kv = Regex::new(r"^([A-Za-z_][\w.\-]*)\s*[=:](.*)$").unwrap();
+
+    // Group by prefix (first segment before dot)
+    let mut sections: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    for (line_num, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('!') {
+            continue;
+        }
+
+        if let Some(caps) = re_kv.captures(trimmed) {
+            let key = caps[1].to_string();
+            let value = caps[2].trim().to_string();
+
+            // Extract prefix for grouping
+            if let Some(dot_pos) = key.find('.') {
+                let prefix = &key[..dot_pos];
+                if !sections.contains_key(prefix) {
+                    let decl = Declaration::new(
+                        DeclKind::ConfigKey,
+                        prefix.to_string(),
+                        format!("{}.*", prefix),
+                        Visibility::Public,
+                        line_num + 1,
+                    );
+                    let idx = declarations.len();
+                    declarations.push(decl);
+                    sections.insert(prefix.to_string(), idx);
+                }
+                let parent_idx = sections[prefix];
+                declarations[parent_idx].children.push(Declaration::new(
+                    DeclKind::ConfigKey,
+                    key.clone(),
+                    format!("{} = {}", key, truncate_value(&value, 50)),
+                    Visibility::Private,
+                    line_num + 1,
+                ));
+            } else {
+                declarations.push(Declaration::new(
+                    DeclKind::ConfigKey,
+                    key.clone(),
+                    format!("{} = {}", key, truncate_value(&value, 50)),
+                    Visibility::Public,
+                    line_num + 1,
+                ));
+            }
+        }
+    }
+
+    (imports, declarations)
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn count_braces(line: &str, depth: &mut i32) {
+    for ch in line.chars() {
+        match ch {
+            '{' => *depth += 1,
+            '}' => *depth -= 1,
+            _ => {}
+        }
+    }
+}
+
+fn pop_containers(stack: &mut Vec<(i32, usize)>, brace_depth: i32) {
+    while stack.last().map(|(d, _)| brace_depth <= *d).unwrap_or(false) {
+        stack.pop();
+    }
+}
 
 fn truncate_value(s: &str, max: usize) -> String {
     if s.len() <= max {
@@ -1442,5 +3085,305 @@ schema {
             .declarations
             .iter()
             .any(|d| d.name == "schema" && d.kind == DeclKind::ConfigKey));
+    }
+
+    #[test]
+    fn test_ruby() {
+        let content = r#"require 'json'
+require_relative 'helper'
+
+module MyModule
+  class MyClass < Base
+    TIMEOUT = 30
+
+    attr_accessor :name, :email
+
+    def initialize(name)
+      @name = name
+    end
+
+    def self.create(args)
+    end
+
+    def greet
+    end
+  end
+end
+"#;
+        let parser = make_parser(Language::Ruby);
+        let result = parser.parse_file(Path::new("app.rb"), content).unwrap();
+        assert_eq!(result.imports.len(), 2);
+        assert!(result.declarations.iter().any(|d| d.name == "MyModule" && d.kind == DeclKind::Module));
+    }
+
+    #[test]
+    fn test_kotlin() {
+        let content = r#"package com.example
+
+import com.example.Base
+
+class MyClass : Base() {
+    override fun getName(): String = "test"
+
+    fun doSomething(x: Int, y: String) {
+    }
+}
+
+data class Point(val x: Int, val y: Int)
+
+interface Drawable {
+    fun draw()
+}
+"#;
+        let parser = make_parser(Language::Kotlin);
+        let result = parser.parse_file(Path::new("Test.kt"), content).unwrap();
+        assert!(result.imports.iter().any(|i| i.text.contains("com.example")));
+        let cls = result.declarations.iter().find(|d| d.name == "MyClass" && d.kind == DeclKind::Class);
+        assert!(cls.is_some());
+        assert!(cls.unwrap().children.iter().any(|c| c.name == "getName"));
+        assert!(result.declarations.iter().any(|d| d.name == "Point" && d.kind == DeclKind::Class));
+        assert!(result.declarations.iter().any(|d| d.name == "Drawable" && d.kind == DeclKind::Interface));
+    }
+
+    #[test]
+    fn test_swift() {
+        let content = r#"import UIKit
+import Foundation
+
+class AppDelegate: UIResponder {
+    func application(_ app: UIApplication) -> Bool {
+        return true
+    }
+}
+
+protocol Drawable {
+    func draw()
+}
+
+struct Point {
+    let x: Double
+    let y: Double
+}
+
+enum Direction {
+    case north
+    case south
+}
+"#;
+        let parser = make_parser(Language::Swift);
+        let result = parser.parse_file(Path::new("App.swift"), content).unwrap();
+        assert_eq!(result.imports.len(), 2);
+        assert!(result.declarations.iter().any(|d| d.name == "AppDelegate" && d.kind == DeclKind::Class));
+        assert!(result.declarations.iter().any(|d| d.name == "Drawable" && d.kind == DeclKind::Interface));
+        assert!(result.declarations.iter().any(|d| d.name == "Point" && d.kind == DeclKind::Struct));
+        assert!(result.declarations.iter().any(|d| d.name == "Direction" && d.kind == DeclKind::Enum));
+    }
+
+    #[test]
+    fn test_csharp() {
+        let content = r#"using System;
+using System.Collections.Generic;
+
+namespace MyApp {
+    public class MyClass : BaseClass {
+        public void DoSomething(string name) {
+        }
+    }
+
+    public interface IDrawable {
+        void Draw();
+    }
+
+    public enum Color {
+        Red,
+        Green,
+        Blue
+    }
+}
+"#;
+        let parser = make_parser(Language::CSharp);
+        let result = parser.parse_file(Path::new("App.cs"), content).unwrap();
+        assert_eq!(result.imports.len(), 2);
+        assert!(result.declarations.iter().any(|d| d.name == "MyApp" && d.kind == DeclKind::Namespace));
+    }
+
+    #[test]
+    fn test_objc() {
+        let content = r#"#import <Foundation/Foundation.h>
+#import "MyHeader.h"
+
+@interface MyClass : NSObject
+
+- (void)doSomething;
++ (instancetype)create;
+
+@end
+
+@implementation MyClass
+
+- (void)doSomething {
+}
+
+@end
+"#;
+        let parser = make_parser(Language::ObjectiveC);
+        let result = parser.parse_file(Path::new("MyClass.m"), content).unwrap();
+        assert_eq!(result.imports.len(), 2);
+        let cls = result.declarations.iter().find(|d| d.name == "MyClass" && d.kind == DeclKind::Class).unwrap();
+        assert!(cls.children.iter().any(|c| c.name == "doSomething"));
+        assert!(cls.children.iter().any(|c| c.name == "create"));
+    }
+
+    #[test]
+    fn test_xml() {
+        let content = r#"<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application android:name=".MainApplication">
+        <activity android:name=".MainActivity" />
+    </application>
+</manifest>
+"#;
+        let parser = make_parser(Language::Xml);
+        let result = parser.parse_file(Path::new("AndroidManifest.xml"), content).unwrap();
+        assert!(!result.declarations.is_empty(), "XML should have declarations");
+        assert!(result.declarations.iter().any(|d| d.name == "manifest"));
+        assert!(result.declarations.iter().any(|d| d.name == "uses-permission"));
+        assert!(result.declarations.iter().any(|d| d.name == "application"));
+        // activity is depth 2, should NOT be extracted
+        assert!(!result.declarations.iter().any(|d| d.name == "activity"));
+    }
+
+    #[test]
+    fn test_xml_multiline_tags() {
+        let content = r#"<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application
+        android:name=".MainApplication"
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
+"#;
+        let parser = make_parser(Language::Xml);
+        let result = parser.parse_file(Path::new("AndroidManifest.xml"), content).unwrap();
+        assert!(result.declarations.iter().any(|d| d.name == "manifest"), "should find manifest");
+        assert!(result.declarations.iter().any(|d| d.name == "uses-permission"), "should find uses-permission");
+        assert!(result.declarations.iter().any(|d| d.name == "application"), "should find application (multiline)");
+        // Deeper elements should NOT be extracted
+        assert!(!result.declarations.iter().any(|d| d.name == "activity"), "activity is depth 2, skip");
+        assert!(!result.declarations.iter().any(|d| d.name == "intent-filter"), "intent-filter is depth 3, skip");
+        assert!(!result.declarations.iter().any(|d| d.name == "action"), "action is depth 4, skip");
+    }
+
+    #[test]
+    fn test_css() {
+        let content = r#"@import url('fonts.css');
+
+:root {
+    --primary-color: #333;
+}
+
+.container {
+    display: flex;
+}
+
+#header {
+    background: white;
+}
+
+@media (max-width: 768px) {
+    .container {
+        flex-direction: column;
+    }
+}
+"#;
+        let parser = make_parser(Language::Css);
+        let result = parser.parse_file(Path::new("style.css"), content).unwrap();
+        assert_eq!(result.imports.len(), 1);
+        assert!(result.declarations.iter().any(|d| d.name.contains("container")));
+    }
+
+    #[test]
+    fn test_gradle_single_line_plugins() {
+        let content = r#"pluginManagement { includeBuild("../node_modules/@react-native/gradle-plugin") }
+plugins { id("com.facebook.react.settings") }
+rootProject.name = 'fernweh_v2'
+include ':app'
+"#;
+        let parser = make_parser(Language::Gradle);
+        let result = parser.parse_file(Path::new("settings.gradle"), content).unwrap();
+        assert!(result.declarations.iter().any(|d| d.name == "pluginManagement"), "should find pluginManagement block");
+        assert!(result.declarations.iter().any(|d| d.name == "plugins"), "should find plugins block");
+        assert!(
+            result.declarations.iter().any(|d| d.name == "com.facebook.react.settings"),
+            "should find plugin ID from single-line plugins block"
+        );
+    }
+
+    #[test]
+    fn test_ruby_gemfile() {
+        let content = r#"source 'https://rubygems.org'
+
+ruby ">= 2.6.10"
+
+gem 'cocoapods', '>= 1.13'
+gem 'activesupport', '>= 6.1'
+gem 'bigdecimal'
+"#;
+        let parser = make_parser(Language::Ruby);
+        let result = parser.parse_file(Path::new("Gemfile"), content).unwrap();
+        assert_eq!(result.imports.len(), 3);
+        assert!(result.imports.iter().any(|i| i.text == "cocoapods"));
+        assert!(result.imports.iter().any(|i| i.text == "activesupport"));
+        assert!(result.imports.iter().any(|i| i.text == "bigdecimal"));
+        assert!(result.declarations.iter().any(|d| d.name == "source"));
+    }
+
+    #[test]
+    fn test_cmake() {
+        let content = r#"cmake_minimum_required(VERSION 3.20)
+project(MyProject)
+
+add_executable(myapp main.cpp)
+add_library(mylib STATIC lib.cpp)
+
+find_package(Boost REQUIRED)
+
+function(my_helper)
+    message("helper")
+endfunction()
+"#;
+        let parser = make_parser(Language::Cmake);
+        let result = parser.parse_file(Path::new("CMakeLists.txt"), content).unwrap();
+        assert!(result.declarations.iter().any(|d| d.name == "MyProject" && d.kind == DeclKind::Module));
+        assert!(result.declarations.iter().any(|d| d.name == "myapp" && d.kind == DeclKind::Function));
+        assert!(result.declarations.iter().any(|d| d.name == "my_helper" && d.kind == DeclKind::Function));
+        assert!(result.imports.iter().any(|i| i.text == "Boost"));
+    }
+
+    #[test]
+    fn test_properties() {
+        let content = r#"# Database config
+db.host=localhost
+db.port=5432
+db.name=mydb
+app.name=MyApp
+version=1.0
+"#;
+        let parser = make_parser(Language::Properties);
+        let result = parser.parse_file(Path::new("config.properties"), content).unwrap();
+        assert!(result.declarations.iter().any(|d| d.name == "db"));
+        let db = result.declarations.iter().find(|d| d.name == "db").unwrap();
+        assert_eq!(db.children.len(), 3);
+        assert!(result.declarations.iter().any(|d| d.name == "version"));
     }
 }

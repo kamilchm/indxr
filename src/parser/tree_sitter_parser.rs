@@ -17,11 +17,18 @@ impl TreeSitterParser {
         Self { language }
     }
 
-    fn get_ts_language(&self) -> tree_sitter::Language {
+    fn get_ts_language(&self, path: &Path) -> tree_sitter::Language {
         match self.language {
             Language::Rust => tree_sitter_rust::LANGUAGE.into(),
             Language::Python => tree_sitter_python::LANGUAGE.into(),
-            Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            Language::TypeScript => {
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                if ext == "tsx" {
+                    tree_sitter_typescript::LANGUAGE_TSX.into()
+                } else {
+                    tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()
+                }
+            }
             Language::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
             Language::Go => tree_sitter_go::LANGUAGE.into(),
             Language::Java => tree_sitter_java::LANGUAGE.into(),
@@ -39,7 +46,7 @@ impl LanguageParser for TreeSitterParser {
 
     fn parse_file(&self, path: &Path, content: &str) -> Result<FileIndex> {
         let mut parser = tree_sitter::Parser::new();
-        let ts_lang = self.get_ts_language();
+        let ts_lang = self.get_ts_language(path);
         parser
             .set_language(&ts_lang)
             .map_err(|e| anyhow::anyhow!("Failed to set tree-sitter language: {:?}", e))?;

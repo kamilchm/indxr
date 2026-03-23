@@ -13,7 +13,6 @@ pub enum Language {
     Java,
     C,
     Cpp,
-    // New languages
     Shell,
     Toml,
     Yaml,
@@ -22,6 +21,18 @@ pub enum Language {
     Markdown,
     Protobuf,
     GraphQL,
+    // Expanded language support
+    Ruby,
+    Kotlin,
+    Swift,
+    CSharp,
+    ObjectiveC,
+    Xml,
+    Html,
+    Css,
+    Gradle,
+    Cmake,
+    Properties,
 }
 
 impl Language {
@@ -34,6 +45,10 @@ impl Language {
                 "package.json" | "tsconfig.json" | "composer.json" => return Some(Language::Json),
                 "docker-compose.yml" | "docker-compose.yaml" => return Some(Language::Yaml),
                 ".bashrc" | ".zshrc" | ".bash_profile" | ".profile" => return Some(Language::Shell),
+                "Gemfile" | "Rakefile" => return Some(Language::Ruby),
+                "CMakeLists.txt" => return Some(Language::Cmake),
+                "build.gradle" | "settings.gradle" | "build.gradle.kts"
+                | "settings.gradle.kts" => return Some(Language::Gradle),
                 _ => {}
             }
         }
@@ -42,8 +57,8 @@ impl Language {
         match ext {
             "rs" => Some(Language::Rust),
             "py" | "pyi" => Some(Language::Python),
-            "ts" | "tsx" => Some(Language::TypeScript),
-            "js" | "jsx" | "mjs" | "cjs" => Some(Language::JavaScript),
+            "ts" | "tsx" | "mts" | "cts" => Some(Language::TypeScript),
+            "js" | "jsx" | "mjs" | "cjs" | "flow" => Some(Language::JavaScript),
             "go" => Some(Language::Go),
             "java" => Some(Language::Java),
             "c" | "h" => Some(Language::C),
@@ -56,6 +71,17 @@ impl Language {
             "md" | "markdown" => Some(Language::Markdown),
             "proto" => Some(Language::Protobuf),
             "graphql" | "gql" => Some(Language::GraphQL),
+            "rb" | "rake" | "gemspec" | "podspec" => Some(Language::Ruby),
+            "kt" | "kts" => Some(Language::Kotlin),
+            "swift" => Some(Language::Swift),
+            "cs" => Some(Language::CSharp),
+            "m" | "mm" => Some(Language::ObjectiveC),
+            "xml" | "plist" | "svg" | "xib" | "storyboard" => Some(Language::Xml),
+            "html" | "htm" => Some(Language::Html),
+            "css" => Some(Language::Css),
+            "gradle" => Some(Language::Gradle),
+            "cmake" => Some(Language::Cmake),
+            "properties" => Some(Language::Properties),
             _ => None,
         }
     }
@@ -78,6 +104,17 @@ impl Language {
             Language::Markdown => "Markdown",
             Language::Protobuf => "Protobuf",
             Language::GraphQL => "GraphQL",
+            Language::Ruby => "Ruby",
+            Language::Kotlin => "Kotlin",
+            Language::Swift => "Swift",
+            Language::CSharp => "C#",
+            Language::ObjectiveC => "Objective-C",
+            Language::Xml => "XML",
+            Language::Html => "HTML",
+            Language::Css => "CSS",
+            Language::Gradle => "Gradle",
+            Language::Cmake => "CMake",
+            Language::Properties => "Properties",
         }
     }
 
@@ -99,6 +136,17 @@ impl Language {
             "markdown" | "md" => Some(Language::Markdown),
             "protobuf" | "proto" => Some(Language::Protobuf),
             "graphql" | "gql" => Some(Language::GraphQL),
+            "ruby" | "rb" => Some(Language::Ruby),
+            "kotlin" | "kt" => Some(Language::Kotlin),
+            "swift" => Some(Language::Swift),
+            "csharp" | "c#" | "cs" => Some(Language::CSharp),
+            "objectivec" | "objective-c" | "objc" => Some(Language::ObjectiveC),
+            "xml" => Some(Language::Xml),
+            "html" => Some(Language::Html),
+            "css" => Some(Language::Css),
+            "gradle" => Some(Language::Gradle),
+            "cmake" => Some(Language::Cmake),
+            "properties" => Some(Language::Properties),
             _ => None,
         }
     }

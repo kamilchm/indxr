@@ -41,7 +41,7 @@ impl ParserRegistry {
             parsers.push(Box::new(TreeSitterParser::new(lang)));
         }
 
-        // Regex-based parsers for new languages
+        // Regex-based parsers
         let regex_languages = [
             Language::Shell,
             Language::Toml,
@@ -51,6 +51,17 @@ impl ParserRegistry {
             Language::Markdown,
             Language::Protobuf,
             Language::GraphQL,
+            Language::Ruby,
+            Language::Kotlin,
+            Language::Swift,
+            Language::CSharp,
+            Language::ObjectiveC,
+            Language::Xml,
+            Language::Html,
+            Language::Css,
+            Language::Gradle,
+            Language::Cmake,
+            Language::Properties,
         ];
 
         for lang in regex_languages {

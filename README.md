@@ -1,6 +1,6 @@
 # indxr
 
-Fast codebase indexer for AI agents. Tree-sitter AST parsing + regex extraction across 16 languages. Built in Rust.
+Fast codebase indexer for AI agents. Tree-sitter AST parsing + regex extraction across 27 languages. Built in Rust.
 
 ## Install
 
@@ -70,12 +70,12 @@ Three detail levels (`-d`):
 
 ## Languages
 
-8 tree-sitter (full AST) + 8 regex (structural extraction):
+8 tree-sitter (full AST) + 19 regex (structural extraction):
 
 | Parser | Languages |
 |--------|-----------|
-| tree-sitter | Rust, Python, TypeScript, JavaScript, Go, Java, C, C++ |
-| regex | Shell, TOML, YAML, JSON, SQL, Markdown, Protobuf, GraphQL |
+| tree-sitter | Rust, Python, TypeScript/TSX, JavaScript/JSX, Go, Java, C, C++ |
+| regex | Shell, TOML, YAML, JSON, SQL, Markdown, Protobuf, GraphQL, Ruby, Kotlin, Swift, C#, Objective-C, XML, HTML, CSS, Gradle, CMake, Properties |
 
 Detection is by file extension. Full extraction details: [docs/languages.md](docs/languages.md)
 
