@@ -3,6 +3,7 @@ use std::fmt::Write;
 use anyhow::Result;
 
 use crate::model::CodebaseIndex;
+use crate::model::DetailLevel;
 use crate::model::declarations::{DeclKind, Declaration, Visibility};
 
 use super::OutputFormatter;
@@ -10,7 +11,7 @@ use super::OutputFormatter;
 pub struct MarkdownFormatter;
 
 impl OutputFormatter for MarkdownFormatter {
-    fn format(&self, index: &CodebaseIndex) -> Result<String> {
+    fn format(&self, index: &CodebaseIndex, detail: DetailLevel) -> Result<String> {
         let mut out = String::new();
 
         // Header
@@ -49,6 +50,11 @@ impl OutputFormatter for MarkdownFormatter {
         writeln!(out, "```")?;
         writeln!(out)?;
 
+        // Summary mode stops here
+        if detail == DetailLevel::Summary {
+            return Ok(out);
+        }
+
         // File sections
         for file in &index.files {
             writeln!(out, "---")?;
@@ -78,7 +84,7 @@ impl OutputFormatter for MarkdownFormatter {
                 writeln!(out, "**Declarations:**")?;
                 writeln!(out)?;
                 for decl in &file.declarations {
-                    format_declaration(&mut out, decl, 0)?;
+                    format_declaration(&mut out, decl, 0, detail)?;
                 }
             }
         }
@@ -87,7 +93,12 @@ impl OutputFormatter for MarkdownFormatter {
     }
 }
 
-fn format_declaration(out: &mut String, decl: &Declaration, depth: usize) -> std::fmt::Result {
+fn format_declaration(
+    out: &mut String,
+    decl: &Declaration,
+    depth: usize,
+    detail: DetailLevel,
+) -> std::fmt::Result {
     let indent = "  ".repeat(depth);
 
     match decl.kind {
@@ -106,7 +117,10 @@ fn format_declaration(out: &mut String, decl: &Declaration, depth: usize) -> std
             };
 
             // Avoid duplicating visibility in signature
-            let sig = if decl.signature.starts_with("pub ") || decl.signature.starts_with("pub(") {
+            let sig = if decl.signature.starts_with("pub ")
+                || decl.signature.starts_with("pub(")
+                || decl.signature.starts_with("export ")
+            {
                 decl.signature.clone()
             } else {
                 format!("{}{}", vis, decl.signature)
@@ -116,30 +130,50 @@ fn format_declaration(out: &mut String, decl: &Declaration, depth: usize) -> std
         }
     }
 
-    // Doc comment
+    // Doc comment (shown in signatures and full modes)
     if let Some(doc) = &decl.doc_comment {
         writeln!(out, "{}> {}", indent, doc)?;
+    }
+
+    // Line number (only in full mode)
+    if detail == DetailLevel::Full && decl.kind != DeclKind::Impl {
+        writeln!(out, "{}> Line {}", indent, decl.line)?;
     }
 
     // Children
     if !decl.children.is_empty() {
         match decl.kind {
-            DeclKind::Struct => {
+            DeclKind::Struct | DeclKind::Class => {
                 let fields: Vec<String> = decl
                     .children
                     .iter()
+                    .filter(|c| c.kind == DeclKind::Field)
                     .map(|f| format!("`{}`", f.signature))
                     .collect();
-                writeln!(out, "{}> Fields: {}", indent, fields.join(", "))?;
+                if !fields.is_empty() {
+                    writeln!(out, "{}> Fields: {}", indent, fields.join(", "))?;
+                }
+                // Methods inside class/struct
+                for child in &decl.children {
+                    if child.kind == DeclKind::Method || child.kind == DeclKind::Function {
+                        format_declaration(out, child, depth + 1, detail)?;
+                    }
+                }
             }
             DeclKind::Enum => {
-                let variants: Vec<String> =
-                    decl.children.iter().map(|v| format!("`{}`", v.name)).collect();
-                writeln!(out, "{}> Variants: {}", indent, variants.join(", "))?;
+                let variants: Vec<String> = decl
+                    .children
+                    .iter()
+                    .filter(|c| c.kind == DeclKind::Variant)
+                    .map(|v| format!("`{}`", v.name))
+                    .collect();
+                if !variants.is_empty() {
+                    writeln!(out, "{}> Variants: {}", indent, variants.join(", "))?;
+                }
             }
-            DeclKind::Impl | DeclKind::Trait => {
+            DeclKind::Impl | DeclKind::Trait | DeclKind::Module => {
                 for child in &decl.children {
-                    format_declaration(out, child, depth + 1)?;
+                    format_declaration(out, child, depth + 1, detail)?;
                 }
             }
             _ => {}

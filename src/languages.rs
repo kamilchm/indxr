@@ -1,9 +1,9 @@
 use std::fmt;
 use std::path::Path;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Language {
     Rust,
     Python,
@@ -41,6 +41,20 @@ impl Language {
             Language::Java => "Java",
             Language::C => "C",
             Language::Cpp => "C++",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_lowercase().as_str() {
+            "rust" | "rs" => Some(Language::Rust),
+            "python" | "py" => Some(Language::Python),
+            "typescript" | "ts" => Some(Language::TypeScript),
+            "javascript" | "js" => Some(Language::JavaScript),
+            "go" => Some(Language::Go),
+            "java" => Some(Language::Java),
+            "c" => Some(Language::C),
+            "cpp" | "c++" | "cxx" => Some(Language::Cpp),
+            _ => None,
         }
     }
 }

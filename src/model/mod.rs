@@ -3,10 +3,17 @@ pub mod declarations;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::languages::Language;
 use self::declarations::Declaration;
+
+#[derive(Debug, Clone, Copy, PartialEq, clap::ValueEnum)]
+pub enum DetailLevel {
+    Summary,
+    Signatures,
+    Full,
+}
 
 #[derive(Debug, Serialize)]
 pub struct CodebaseIndex {
@@ -18,7 +25,7 @@ pub struct CodebaseIndex {
     pub stats: IndexStats,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileIndex {
     pub path: PathBuf,
     pub language: Language,
@@ -28,7 +35,7 @@ pub struct FileIndex {
     pub declarations: Vec<Declaration>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Import {
     pub text: String,
 }

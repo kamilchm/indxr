@@ -1,8 +1,8 @@
 use std::fmt;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Declaration {
     pub kind: DeclKind,
     pub name: String,
@@ -13,7 +13,7 @@ pub struct Declaration {
     pub children: Vec<Declaration>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum DeclKind {
     Function,
     Struct,
@@ -24,12 +24,13 @@ pub enum DeclKind {
     Static,
     TypeAlias,
     Module,
+    Class,
     Field,
     Variant,
     Method,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Visibility {
     Public,
     PublicCrate,
@@ -58,6 +59,7 @@ impl fmt::Display for DeclKind {
             DeclKind::Static => write!(f, "static"),
             DeclKind::TypeAlias => write!(f, "type"),
             DeclKind::Module => write!(f, "mod"),
+            DeclKind::Class => write!(f, "class"),
             DeclKind::Field => write!(f, "field"),
             DeclKind::Variant => write!(f, "variant"),
         }

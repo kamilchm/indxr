@@ -19,18 +19,25 @@ pub struct ParserRegistry {
 
 impl ParserRegistry {
     pub fn new() -> Self {
-        let mut registry = ParserRegistry {
-            parsers: Vec::new(),
-        };
+        use tree_sitter_parser::TreeSitterParser;
 
-        // Register Rust parser
-        registry
-            .parsers
-            .push(Box::new(tree_sitter_parser::TreeSitterParser::new(
-                Language::Rust,
-            )));
+        let languages = [
+            Language::Rust,
+            Language::Python,
+            Language::TypeScript,
+            Language::JavaScript,
+            Language::Go,
+            Language::Java,
+            Language::C,
+            Language::Cpp,
+        ];
 
-        registry
+        let parsers: Vec<Box<dyn LanguageParser>> = languages
+            .into_iter()
+            .map(|lang| Box::new(TreeSitterParser::new(lang)) as Box<dyn LanguageParser>)
+            .collect();
+
+        ParserRegistry { parsers }
     }
 
     pub fn get_parser(&self, language: &Language) -> Option<&dyn LanguageParser> {

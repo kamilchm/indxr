@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use crate::languages::Language;
 use crate::model::FileIndex;
@@ -20,7 +20,13 @@ impl TreeSitterParser {
     fn get_ts_language(&self) -> tree_sitter::Language {
         match self.language {
             Language::Rust => tree_sitter_rust::LANGUAGE.into(),
-            _ => panic!("Unsupported language: {:?}", self.language),
+            Language::Python => tree_sitter_python::LANGUAGE.into(),
+            Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            Language::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
+            Language::Go => tree_sitter_go::LANGUAGE.into(),
+            Language::Java => tree_sitter_java::LANGUAGE.into(),
+            Language::C => tree_sitter_c::LANGUAGE.into(),
+            Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
         }
     }
 }
@@ -39,7 +45,7 @@ impl LanguageParser for TreeSitterParser {
 
         let tree = parser
             .parse(content, None)
-            .context("Failed to parse file")?;
+            .ok_or_else(|| anyhow::anyhow!("Failed to parse file"))?;
 
         let root = tree.root_node();
         let extractor = queries::get_extractor(&self.language);

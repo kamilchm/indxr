@@ -1,4 +1,11 @@
+pub mod c;
+pub mod cpp;
+pub mod go;
+pub mod java;
+pub mod javascript;
+pub mod python;
 pub mod rust;
+pub mod typescript;
 
 use crate::languages::Language;
 use crate::model::Import;
@@ -11,6 +18,12 @@ pub trait DeclExtractor: Send + Sync {
 pub fn get_extractor(language: &Language) -> Box<dyn DeclExtractor> {
     match language {
         Language::Rust => Box::new(rust::RustExtractor),
-        _ => panic!("No extractor for language: {}", language),
+        Language::Python => Box::new(python::PythonExtractor),
+        Language::Go => Box::new(go::GoExtractor),
+        Language::TypeScript => Box::new(typescript::TypeScriptExtractor),
+        Language::JavaScript => Box::new(javascript::JavaScriptExtractor),
+        Language::Java => Box::new(java::JavaExtractor),
+        Language::C => Box::new(c::CExtractor),
+        Language::Cpp => Box::new(cpp::CppExtractor),
     }
 }

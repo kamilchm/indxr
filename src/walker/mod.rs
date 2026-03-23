@@ -17,6 +17,7 @@ pub struct FileEntry {
     pub relative_path: PathBuf,
     pub language: Language,
     pub size: u64,
+    pub mtime: u64,
 }
 
 pub fn walk_directory(
@@ -24,10 +25,19 @@ pub fn walk_directory(
     respect_gitignore: bool,
     max_file_size: u64,
     max_depth: Option<usize>,
+    exclude_patterns: &[String],
 ) -> Result<WalkResult> {
     let mut builder = WalkBuilder::new(root);
     builder.git_ignore(respect_gitignore);
     builder.hidden(true);
+
+    if !exclude_patterns.is_empty() {
+        let mut overrides = ignore::overrides::OverrideBuilder::new(root);
+        for pattern in exclude_patterns {
+            overrides.add(&format!("!{}", pattern))?;
+        }
+        builder.overrides(overrides.build()?);
+    }
 
     if let Some(depth) = max_depth {
         builder.max_depth(Some(depth));
@@ -54,6 +64,13 @@ pub fn walk_directory(
             continue;
         }
 
+        let mtime = metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
         // Only include files with recognized languages
         if let Some(language) = Language::detect(path) {
             // Track ancestor directories
@@ -70,6 +87,7 @@ pub fn walk_directory(
                 relative_path: relative.to_path_buf(),
                 language,
                 size,
+                mtime,
             });
         }
     }
