@@ -111,7 +111,9 @@ impl OutputFormatter for MarkdownFormatter {
                 writeln!(out, "**{}**", file_path)?;
                 for decl in &public_decls {
                     write!(out, "- `{}`", decl.signature)?;
-                    write_badges(&mut out, decl)?;
+                    if detail == DetailLevel::Full {
+                        write_badges(&mut out, decl)?;
+                    }
                     writeln!(out)?;
                     // Track that we showed this declaration in the API surface
                     shown_in_api.insert((file_path.clone(), decl.line));
@@ -229,18 +231,19 @@ fn format_declaration(
             };
 
             write!(out, "{}`{}`", indent, sig)?;
-            write_badges(out, decl)?;
+            if detail == DetailLevel::Full {
+                write_badges(out, decl)?;
+            }
             writeln!(out)?;
         }
     }
 
-    // Doc comment (shown in signatures and full modes)
-    if let Some(doc) = &decl.doc_comment {
-        writeln!(out, "{}> {}", indent, doc)?;
-    }
+    // Full-level metadata: doc comments, line numbers, body size, relationships
+    if detail == DetailLevel::Full {
+        if let Some(doc) = &decl.doc_comment {
+            writeln!(out, "{}> {}", indent, doc)?;
+        }
 
-    // Line number (shown in signatures and full modes)
-    if detail == DetailLevel::Full || detail == DetailLevel::Signatures {
         if decl.kind != DeclKind::Impl && decl.line > 0 {
             write!(out, "{}> Line {}", indent, decl.line)?;
             if let Some(body) = decl.body_lines {
@@ -248,16 +251,15 @@ fn format_declaration(
             }
             writeln!(out)?;
         }
-    }
 
-    // Relationships
-    if !decl.relationships.is_empty() {
-        let rels: Vec<String> = decl
-            .relationships
-            .iter()
-            .map(|r| format!("{} `{}`", r.kind, r.target))
-            .collect();
-        writeln!(out, "{}> {}", indent, rels.join(", "))?;
+        if !decl.relationships.is_empty() {
+            let rels: Vec<String> = decl
+                .relationships
+                .iter()
+                .map(|r| format!("{} `{}`", r.kind, r.target))
+                .collect();
+            writeln!(out, "{}> {}", indent, rels.join(", "))?;
+        }
     }
 
     // Children
