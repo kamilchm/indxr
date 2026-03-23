@@ -1,4 +1,5 @@
 pub mod queries;
+pub mod regex_parser;
 pub mod tree_sitter_parser;
 
 use std::path::Path;
@@ -19,9 +20,13 @@ pub struct ParserRegistry {
 
 impl ParserRegistry {
     pub fn new() -> Self {
+        use regex_parser::RegexParser;
         use tree_sitter_parser::TreeSitterParser;
 
-        let languages = [
+        let mut parsers: Vec<Box<dyn LanguageParser>> = Vec::new();
+
+        // Tree-sitter based parsers
+        let ts_languages = [
             Language::Rust,
             Language::Python,
             Language::TypeScript,
@@ -32,10 +37,25 @@ impl ParserRegistry {
             Language::Cpp,
         ];
 
-        let parsers: Vec<Box<dyn LanguageParser>> = languages
-            .into_iter()
-            .map(|lang| Box::new(TreeSitterParser::new(lang)) as Box<dyn LanguageParser>)
-            .collect();
+        for lang in ts_languages {
+            parsers.push(Box::new(TreeSitterParser::new(lang)));
+        }
+
+        // Regex-based parsers for new languages
+        let regex_languages = [
+            Language::Shell,
+            Language::Toml,
+            Language::Yaml,
+            Language::Json,
+            Language::Sql,
+            Language::Markdown,
+            Language::Protobuf,
+            Language::GraphQL,
+        ];
+
+        for lang in regex_languages {
+            parsers.push(Box::new(RegexParser::new(lang)));
+        }
 
         ParserRegistry { parsers }
     }

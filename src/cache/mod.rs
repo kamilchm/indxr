@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::model::FileIndex;
 use self::fingerprint::{compute_hash, metadata_matches};
 
-const CACHE_VERSION: u32 = 1;
+const CACHE_VERSION: u32 = 2;
 const CACHE_FILENAME: &str = "cache.bin";
 
 #[derive(Serialize, Deserialize)]

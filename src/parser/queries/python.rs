@@ -1,7 +1,7 @@
 use tree_sitter::Node;
 
 use crate::model::Import;
-use crate::model::declarations::{DeclKind, Declaration, Visibility};
+use crate::model::declarations::{DeclKind, Declaration, Visibility, Relationship, RelKind};
 
 use super::DeclExtractor;
 
@@ -143,6 +143,50 @@ fn extract_import(node: Node<'_>, source: &str) -> Option<Import> {
     Some(Import { text })
 }
 
+fn body_lines(node: Node<'_>) -> Option<usize> {
+    let start = node.start_position().row;
+    let end = node.end_position().row;
+    Some(end - start)
+}
+
+fn detect_is_test_function(name: &str) -> bool {
+    name.starts_with("test_")
+}
+
+fn detect_is_test_class(name: &str) -> bool {
+    name.starts_with("Test")
+}
+
+fn detect_is_async(signature: &str) -> bool {
+    signature.contains("async def")
+}
+
+fn has_deprecated_decorator(decorators: &[String]) -> bool {
+    decorators.iter().any(|d| d.contains("deprecated"))
+}
+
+/// Extract base class names from a class node's superclasses field.
+fn extract_base_classes(node: Node<'_>, source: &str) -> Vec<String> {
+    let mut bases = Vec::new();
+    if let Some(superclasses) = node.child_by_field_name("superclasses") {
+        // superclasses is an argument_list like (Base1, Base2)
+        for i in 0..superclasses.child_count() {
+            if let Some(child) = superclasses.child(i) {
+                match child.kind() {
+                    "identifier" => {
+                        bases.push(node_text(child, source).to_string());
+                    }
+                    "attribute" => {
+                        bases.push(node_text(child, source).to_string());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    bases
+}
+
 fn extract_function(node: Node<'_>, source: &str, kind: DeclKind) -> Option<Declaration> {
     let name_node = node.child_by_field_name("name")?;
     let name = node_text(name_node, source).to_string();
@@ -156,15 +200,13 @@ fn extract_function(node: Node<'_>, source: &str, kind: DeclKind) -> Option<Decl
         .and_then(|body| extract_docstring(body, source))
         .or_else(|| extract_doc_comment(node, source));
 
-    Some(Declaration {
-        kind,
-        name,
-        signature,
-        visibility,
-        line,
-        doc_comment,
-        children: Vec::new(),
-    })
+    let mut decl = Declaration::new(kind, name.clone(), signature.clone(), visibility, line);
+    decl.doc_comment = doc_comment;
+    decl.is_test = detect_is_test_function(&name);
+    decl.is_async = detect_is_async(&signature);
+    decl.body_lines = body_lines(node);
+
+    Some(decl)
 }
 
 fn extract_class(node: Node<'_>, source: &str) -> Option<Declaration> {
@@ -213,6 +255,10 @@ fn extract_class(node: Node<'_>, source: &str) -> Option<Declaration> {
                                     method.signature =
                                         format!("{} {}", prefix, method.signature);
                                 }
+                                // Check for @deprecated on decorated methods
+                                if has_deprecated_decorator(&decorators) {
+                                    method.is_deprecated = true;
+                                }
                                 methods.push(method);
                             }
                         }
@@ -223,15 +269,24 @@ fn extract_class(node: Node<'_>, source: &str) -> Option<Declaration> {
         }
     }
 
-    Some(Declaration {
-        kind: DeclKind::Struct, // classes map to Struct
-        name,
-        signature,
-        visibility,
-        line,
-        doc_comment,
-        children: methods,
-    })
+    // Build relationships from base classes
+    let base_classes = extract_base_classes(node, source);
+    let relationships: Vec<Relationship> = base_classes
+        .into_iter()
+        .map(|base| Relationship {
+            kind: RelKind::Extends,
+            target: base,
+        })
+        .collect();
+
+    let mut decl = Declaration::new(DeclKind::Struct, name.clone(), signature, visibility, line);
+    decl.doc_comment = doc_comment;
+    decl.children = methods;
+    decl.is_test = detect_is_test_class(&name);
+    decl.body_lines = body_lines(node);
+    decl.relationships = relationships;
+
+    Some(decl)
 }
 
 fn find_inner_definition(decorated: Node<'_>) -> Option<Node<'_>> {
@@ -278,6 +333,14 @@ fn extract_decorated(node: Node<'_>, source: &str) -> Vec<Declaration> {
                     let prefix = decorators.join(" ");
                     decl.signature = format!("{} {}", prefix, decl.signature);
                 }
+                // Check for @deprecated decorator
+                if has_deprecated_decorator(&decorators) {
+                    decl.is_deprecated = true;
+                }
+                // Check for async in the full decorated signature
+                if detect_is_async(&decl.signature) {
+                    decl.is_async = true;
+                }
                 declarations.push(decl);
             }
         }
@@ -287,6 +350,10 @@ fn extract_decorated(node: Node<'_>, source: &str) -> Vec<Declaration> {
                 if !decorators.is_empty() {
                     let prefix = decorators.join(" ");
                     decl.signature = format!("{} {}", prefix, decl.signature);
+                }
+                // Check for @deprecated decorator on class
+                if has_deprecated_decorator(&decorators) {
+                    decl.is_deprecated = true;
                 }
                 declarations.push(decl);
             }
@@ -319,15 +386,11 @@ fn extract_assignment(node: Node<'_>, source: &str) -> Option<Declaration> {
                 .join(" ");
             let doc_comment = extract_doc_comment(node, source);
 
-            return Some(Declaration {
-                kind: DeclKind::Constant,
-                name,
-                signature,
-                visibility,
-                line,
-                doc_comment,
-                children: Vec::new(),
-            });
+            let mut decl = Declaration::new(DeclKind::Constant, name, signature, visibility, line);
+            decl.doc_comment = doc_comment;
+            decl.body_lines = body_lines(node);
+
+            return Some(decl);
         }
     }
     None

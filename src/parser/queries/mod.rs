@@ -25,5 +25,6 @@ pub fn get_extractor(language: &Language) -> Box<dyn DeclExtractor> {
         Language::Java => Box::new(java::JavaExtractor),
         Language::C => Box::new(c::CExtractor),
         Language::Cpp => Box::new(cpp::CppExtractor),
+        _ => unreachable!("get_extractor should only be called for tree-sitter languages"),
     }
 }

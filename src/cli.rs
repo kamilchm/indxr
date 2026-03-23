@@ -1,12 +1,15 @@
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 use crate::model::DetailLevel;
 
 #[derive(Parser, Debug)]
 #[command(name = "indxr", version, about = "Fast codebase indexer for AI agents")]
 pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
     /// Root directory to index
     #[arg(default_value = ".")]
     pub path: PathBuf,
@@ -58,6 +61,63 @@ pub struct Cli {
     /// Print indexing statistics to stderr
     #[arg(long)]
     pub stats: bool,
+
+    // === New filtering options ===
+    /// Filter to a specific subdirectory path
+    #[arg(long, value_name = "SUBPATH")]
+    pub filter_path: Option<String>,
+
+    /// Search for a specific symbol by name
+    #[arg(long)]
+    pub symbol: Option<String>,
+
+    /// Filter by declaration kind (e.g., function, struct, class)
+    #[arg(long)]
+    pub kind: Option<String>,
+
+    /// Only show public declarations
+    #[arg(long)]
+    pub public_only: bool,
+
+    // === Git-aware diffing ===
+    /// Show structural changes since a git ref (branch, tag, or commit)
+    #[arg(long, value_name = "REF")]
+    pub since: Option<String>,
+
+    // === Token budget ===
+    /// Maximum tokens in output (approximate, ~4 chars/token)
+    #[arg(long, value_name = "N")]
+    pub max_tokens: Option<usize>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// Start MCP (Model Context Protocol) server for AI agent integration
+    Serve {
+        /// Root directory to index
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Cache directory
+        #[arg(long, default_value = ".indxr-cache")]
+        cache_dir: PathBuf,
+
+        /// Skip files larger than N kilobytes
+        #[arg(long, default_value = "512")]
+        max_file_size: u64,
+
+        /// Maximum directory depth to traverse
+        #[arg(long)]
+        max_depth: Option<usize>,
+
+        /// Additional glob patterns to exclude
+        #[arg(short, long)]
+        exclude: Option<Vec<String>>,
+
+        /// Do not respect .gitignore
+        #[arg(long)]
+        no_gitignore: bool,
+    },
 }
 
 #[derive(Debug, Clone, clap::ValueEnum)]

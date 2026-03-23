@@ -55,6 +55,37 @@ impl OutputFormatter for MarkdownFormatter {
             return Ok(out);
         }
 
+        // Public API surface section
+        let has_public = index.files.iter().any(|f| {
+            f.declarations
+                .iter()
+                .any(|d| matches!(d.visibility, Visibility::Public))
+        });
+
+        if has_public {
+            writeln!(out, "---")?;
+            writeln!(out)?;
+            writeln!(out, "## Public API Surface")?;
+            writeln!(out)?;
+            for file in &index.files {
+                let public_decls: Vec<&Declaration> = file
+                    .declarations
+                    .iter()
+                    .filter(|d| matches!(d.visibility, Visibility::Public) && !matches!(d.kind, DeclKind::Impl))
+                    .collect();
+                if public_decls.is_empty() {
+                    continue;
+                }
+                writeln!(out, "**{}**", file.path.display())?;
+                for decl in &public_decls {
+                    write!(out, "- `{}`", decl.signature)?;
+                    write_badges(&mut out, decl)?;
+                    writeln!(out)?;
+                }
+                writeln!(out)?;
+            }
+        }
+
         // File sections
         for file in &index.files {
             writeln!(out, "---")?;
@@ -93,6 +124,24 @@ impl OutputFormatter for MarkdownFormatter {
     }
 }
 
+/// Write metadata badges for a declaration (test, async, deprecated)
+fn write_badges(out: &mut String, decl: &Declaration) -> std::fmt::Result {
+    let mut badges = Vec::new();
+    if decl.is_test {
+        badges.push("test");
+    }
+    if decl.is_async {
+        badges.push("async");
+    }
+    if decl.is_deprecated {
+        badges.push("deprecated");
+    }
+    if !badges.is_empty() {
+        write!(out, " [{}]", badges.join(", "))?;
+    }
+    Ok(())
+}
+
 fn format_declaration(
     out: &mut String,
     decl: &Declaration,
@@ -126,7 +175,9 @@ fn format_declaration(
                 format!("{}{}", vis, decl.signature)
             };
 
-            writeln!(out, "{}`{}`", indent, sig)?;
+            write!(out, "{}`{}`", indent, sig)?;
+            write_badges(out, decl)?;
+            writeln!(out)?;
         }
     }
 
@@ -135,9 +186,25 @@ fn format_declaration(
         writeln!(out, "{}> {}", indent, doc)?;
     }
 
-    // Line number (only in full mode)
-    if detail == DetailLevel::Full && decl.kind != DeclKind::Impl {
-        writeln!(out, "{}> Line {}", indent, decl.line)?;
+    // Line number (shown in signatures and full modes)
+    if detail == DetailLevel::Full || detail == DetailLevel::Signatures {
+        if decl.kind != DeclKind::Impl && decl.line > 0 {
+            write!(out, "{}> Line {}", indent, decl.line)?;
+            if let Some(body) = decl.body_lines {
+                write!(out, " ({} lines)", body)?;
+            }
+            writeln!(out)?;
+        }
+    }
+
+    // Relationships
+    if !decl.relationships.is_empty() {
+        let rels: Vec<String> = decl
+            .relationships
+            .iter()
+            .map(|r| format!("{} `{}`", r.kind, r.target))
+            .collect();
+        writeln!(out, "{}> {}", indent, rels.join(", "))?;
     }
 
     // Children
@@ -176,6 +243,35 @@ fn format_declaration(
                     format_declaration(out, child, depth + 1, detail)?;
                 }
             }
+            DeclKind::Message | DeclKind::Service | DeclKind::SchemaType | DeclKind::Interface => {
+                for child in &decl.children {
+                    format_declaration(out, child, depth + 1, detail)?;
+                }
+            }
+            DeclKind::Heading => {
+                // Headings with children (sub-headings)
+                for child in &decl.children {
+                    format_declaration(out, child, depth + 1, detail)?;
+                }
+            }
+            DeclKind::ConfigKey => {
+                // Config keys with children (nested keys)
+                for child in &decl.children {
+                    format_declaration(out, child, depth + 1, detail)?;
+                }
+            }
+            DeclKind::TableDef => {
+                // Table columns
+                let cols: Vec<String> = decl
+                    .children
+                    .iter()
+                    .filter(|c| c.kind == DeclKind::Field)
+                    .map(|f| format!("`{}`", f.signature))
+                    .collect();
+                if !cols.is_empty() {
+                    writeln!(out, "{}> Columns: {}", indent, cols.join(", "))?;
+                }
+            }
             _ => {}
         }
     }
@@ -191,5 +287,14 @@ fn format_size(bytes: u64) -> String {
         format!("{:.1} KB", bytes as f64 / 1024.0)
     } else {
         format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
+impl std::fmt::Display for crate::model::declarations::RelKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            crate::model::declarations::RelKind::Implements => write!(f, "implements"),
+            crate::model::declarations::RelKind::Extends => write!(f, "extends"),
+        }
     }
 }

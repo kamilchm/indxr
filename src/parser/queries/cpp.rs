@@ -1,7 +1,7 @@
 use tree_sitter::Node;
 
 use crate::model::Import;
-use crate::model::declarations::{DeclKind, Declaration, Visibility};
+use crate::model::declarations::{DeclKind, Declaration, Visibility, Relationship, RelKind};
 
 use super::DeclExtractor;
 
@@ -175,6 +175,38 @@ fn extract_using(node: Node<'_>, source: &str) -> Option<Import> {
     })
 }
 
+/// Check if a node or its doc comment indicates deprecation.
+fn is_deprecated_cpp(node: Node<'_>, source: &str, doc_comment: &Option<String>) -> bool {
+    // Check doc comment for "deprecated"
+    if doc_comment.as_ref().map_or(false, |d| d.to_lowercase().contains("deprecated")) {
+        return true;
+    }
+
+    // Check for [[deprecated]] attribute - look at previous siblings
+    let mut prev = node.prev_sibling();
+    while let Some(sibling) = prev {
+        match sibling.kind() {
+            "attribute_declaration" => {
+                let text = node_text(sibling, source);
+                if text.contains("deprecated") {
+                    return true;
+                }
+                prev = sibling.prev_sibling();
+                continue;
+            }
+            _ => break,
+        }
+    }
+
+    // Also check the signature text itself for [[deprecated]]
+    let text = node_text(node, source);
+    if text.contains("[[deprecated") {
+        return true;
+    }
+
+    false
+}
+
 /// Extract function name from a function_declarator by traversing nested declarators.
 fn extract_function_name<'a>(declarator: Node<'_>, source: &'a str) -> Option<&'a str> {
     if declarator.kind() == "function_declarator" {
@@ -210,15 +242,16 @@ fn extract_function_definition(node: Node<'_>, source: &str) -> Option<Declarati
     let signature = extract_signature(node, source);
     let line = node.start_position().row + 1;
 
-    Some(Declaration {
-        kind: DeclKind::Function,
-        name,
-        signature,
-        visibility,
-        line,
-        doc_comment,
-        children: Vec::new(),
-    })
+    let is_test = name.starts_with("test_");
+    let is_deprecated = is_deprecated_cpp(node, source, &doc_comment);
+    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+
+    let mut decl = Declaration::new(DeclKind::Function, name, signature, visibility, line);
+    decl.doc_comment = doc_comment;
+    decl.is_test = is_test;
+    decl.is_deprecated = is_deprecated;
+    decl.body_lines = body_lines;
+    Some(decl)
 }
 
 fn extract_declaration(node: Node<'_>, source: &str) -> Option<Declaration> {
@@ -231,15 +264,16 @@ fn extract_declaration(node: Node<'_>, source: &str) -> Option<Declaration> {
         let signature = extract_signature(node, source);
         let line = node.start_position().row + 1;
 
-        Some(Declaration {
-            kind: DeclKind::Function,
-            name,
-            signature,
-            visibility,
-            line,
-            doc_comment,
-            children: Vec::new(),
-        })
+        let is_test = name.starts_with("test_");
+        let is_deprecated = is_deprecated_cpp(node, source, &doc_comment);
+        let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+
+        let mut decl = Declaration::new(DeclKind::Function, name, signature, visibility, line);
+        decl.doc_comment = doc_comment;
+        decl.is_test = is_test;
+        decl.is_deprecated = is_deprecated;
+        decl.body_lines = body_lines;
+        Some(decl)
     } else {
         let name = extract_var_name(declarator, source)?.to_string();
         let visibility = extract_visibility_from_text(node, source);
@@ -247,15 +281,14 @@ fn extract_declaration(node: Node<'_>, source: &str) -> Option<Declaration> {
         let signature = extract_signature(node, source);
         let line = node.start_position().row + 1;
 
-        Some(Declaration {
-            kind: DeclKind::Static,
-            name,
-            signature,
-            visibility,
-            line,
-            doc_comment,
-            children: Vec::new(),
-        })
+        let is_deprecated = is_deprecated_cpp(node, source, &doc_comment);
+        let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+
+        let mut decl = Declaration::new(DeclKind::Static, name, signature, visibility, line);
+        decl.doc_comment = doc_comment;
+        decl.is_deprecated = is_deprecated;
+        decl.body_lines = body_lines;
+        Some(decl)
     }
 }
 
@@ -305,6 +338,77 @@ fn extract_var_name<'a>(node: Node<'_>, source: &'a str) -> Option<&'a str> {
         return Some(node_text(name_node, source));
     }
     None
+}
+
+/// Extract class inheritance relationships from `: public Base, private Other`
+fn extract_class_inheritance(node: Node<'_>, source: &str) -> Vec<Relationship> {
+    let mut relationships = Vec::new();
+
+    // Look for base_class_clause child nodes
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if child.kind() == "base_class_clause" {
+                // Parse the base class clause text like ": public Base, private Other"
+                let text = node_text(child, source);
+                let text = text.trim_start_matches(':').trim();
+                for part in text.split(',') {
+                    let part = part.trim();
+                    // Could be "public Base", "private Base", "protected Base", or just "Base"
+                    let target = part
+                        .strip_prefix("public ")
+                        .or_else(|| part.strip_prefix("private "))
+                        .or_else(|| part.strip_prefix("protected "))
+                        .or_else(|| part.strip_prefix("virtual public "))
+                        .or_else(|| part.strip_prefix("virtual private "))
+                        .or_else(|| part.strip_prefix("virtual protected "))
+                        .or_else(|| part.strip_prefix("virtual "))
+                        .unwrap_or(part)
+                        .trim();
+                    if !target.is_empty() {
+                        relationships.push(Relationship {
+                            kind: RelKind::Extends,
+                            target: target.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: parse from signature
+    if relationships.is_empty() {
+        let sig = extract_signature(node, source);
+        if let Some(pos) = sig.find(':') {
+            // Make sure this is inheritance, not namespace
+            let before_colon = &sig[..pos];
+            if !before_colon.ends_with(':') {
+                let after = &sig[pos + 1..];
+                let end = after.find('{').unwrap_or(after.len());
+                let bases = after[..end].trim();
+                for part in bases.split(',') {
+                    let part = part.trim();
+                    let target = part
+                        .strip_prefix("public ")
+                        .or_else(|| part.strip_prefix("private "))
+                        .or_else(|| part.strip_prefix("protected "))
+                        .or_else(|| part.strip_prefix("virtual public "))
+                        .or_else(|| part.strip_prefix("virtual private "))
+                        .or_else(|| part.strip_prefix("virtual protected "))
+                        .or_else(|| part.strip_prefix("virtual "))
+                        .unwrap_or(part)
+                        .trim();
+                    if !target.is_empty() {
+                        relationships.push(Relationship {
+                            kind: RelKind::Extends,
+                            target: target.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    relationships
 }
 
 fn extract_class(
@@ -387,15 +491,17 @@ fn extract_class(
 
     let _ = is_struct;
 
-    Some(Declaration {
-        kind,
-        name,
-        signature,
-        visibility: Visibility::Public,
-        line,
-        doc_comment,
-        children,
-    })
+    let is_deprecated = is_deprecated_cpp(node, source, &doc_comment);
+    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+    let relationships = extract_class_inheritance(node, source);
+
+    let mut decl = Declaration::new(kind, name, signature, Visibility::Public, line);
+    decl.doc_comment = doc_comment;
+    decl.children = children;
+    decl.is_deprecated = is_deprecated;
+    decl.body_lines = body_lines;
+    decl.relationships = relationships;
+    Some(decl)
 }
 
 fn extract_class_member_declaration(node: Node<'_>, source: &str) -> Option<Declaration> {
@@ -408,29 +514,30 @@ fn extract_class_member_declaration(node: Node<'_>, source: &str) -> Option<Decl
         let signature = extract_signature(node, source);
         let line = node.start_position().row + 1;
 
-        Some(Declaration {
-            kind: DeclKind::Method,
-            name,
-            signature,
-            visibility: Visibility::Public,
-            line,
-            doc_comment,
-            children: Vec::new(),
-        })
+        let is_test = name.starts_with("test_");
+        let is_deprecated = is_deprecated_cpp(node, source, &doc_comment);
+        let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+
+        let mut decl = Declaration::new(DeclKind::Method, name, signature, Visibility::Public, line);
+        decl.doc_comment = doc_comment;
+        decl.is_test = is_test;
+        decl.is_deprecated = is_deprecated;
+        decl.body_lines = body_lines;
+        Some(decl)
     } else {
         let name = extract_var_name(declarator, source)?.to_string();
         let line = node.start_position().row + 1;
         let signature = extract_signature(node, source);
 
-        Some(Declaration {
-            kind: DeclKind::Field,
-            name,
-            signature,
-            visibility: Visibility::Public,
-            line,
-            doc_comment: None,
-            children: Vec::new(),
-        })
+        let doc_comment = extract_doc_comment(node, source);
+        let is_deprecated = is_deprecated_cpp(node, source, &doc_comment);
+        let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+
+        let mut decl = Declaration::new(DeclKind::Field, name, signature, Visibility::Public, line);
+        decl.doc_comment = doc_comment;
+        decl.is_deprecated = is_deprecated;
+        decl.body_lines = body_lines;
+        Some(decl)
     }
 }
 
@@ -444,15 +551,16 @@ fn extract_class_field(node: Node<'_>, source: &str) -> Option<Declaration> {
         let signature = extract_signature(node, source);
         let line = node.start_position().row + 1;
 
-        return Some(Declaration {
-            kind: DeclKind::Method,
-            name,
-            signature,
-            visibility: Visibility::Public,
-            line,
-            doc_comment,
-            children: Vec::new(),
-        });
+        let is_test = name.starts_with("test_");
+        let is_deprecated = is_deprecated_cpp(node, source, &doc_comment);
+        let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+
+        let mut decl = Declaration::new(DeclKind::Method, name, signature, Visibility::Public, line);
+        decl.doc_comment = doc_comment;
+        decl.is_test = is_test;
+        decl.is_deprecated = is_deprecated;
+        decl.body_lines = body_lines;
+        return Some(decl);
     }
 
     let name = extract_var_name(declarator, source)?.to_string();
@@ -466,15 +574,15 @@ fn extract_class_field(node: Node<'_>, source: &str) -> Option<Declaration> {
     let signature = format!("{} {}", type_text, name);
     let signature = signature.split_whitespace().collect::<Vec<_>>().join(" ");
 
-    Some(Declaration {
-        kind: DeclKind::Field,
-        name,
-        signature,
-        visibility: Visibility::Public,
-        line,
-        doc_comment: None,
-        children: Vec::new(),
-    })
+    let doc_comment = extract_doc_comment(node, source);
+    let is_deprecated = is_deprecated_cpp(node, source, &doc_comment);
+    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+
+    let mut decl = Declaration::new(DeclKind::Field, name, signature, Visibility::Public, line);
+    decl.doc_comment = doc_comment;
+    decl.is_deprecated = is_deprecated;
+    decl.body_lines = body_lines;
+    Some(decl)
 }
 
 fn extract_enum(node: Node<'_>, source: &str) -> Option<Declaration> {
@@ -497,15 +605,15 @@ fn extract_enum(node: Node<'_>, source: &str) -> Option<Declaration> {
         }
     }
 
-    Some(Declaration {
-        kind: DeclKind::Enum,
-        name,
-        signature,
-        visibility: Visibility::Public,
-        line,
-        doc_comment,
-        children: variants,
-    })
+    let is_deprecated = is_deprecated_cpp(node, source, &doc_comment);
+    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+
+    let mut decl = Declaration::new(DeclKind::Enum, name, signature, Visibility::Public, line);
+    decl.doc_comment = doc_comment;
+    decl.children = variants;
+    decl.is_deprecated = is_deprecated;
+    decl.body_lines = body_lines;
+    Some(decl)
 }
 
 fn extract_enumerator(node: Node<'_>, source: &str) -> Option<Declaration> {
@@ -515,15 +623,11 @@ fn extract_enumerator(node: Node<'_>, source: &str) -> Option<Declaration> {
     let text = node_text(node, source).trim().trim_end_matches(',');
     let signature = text.split_whitespace().collect::<Vec<_>>().join(" ");
 
-    Some(Declaration {
-        kind: DeclKind::Variant,
-        name,
-        signature,
-        visibility: Visibility::Public,
-        line,
-        doc_comment: None,
-        children: Vec::new(),
-    })
+    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+
+    let mut decl = Declaration::new(DeclKind::Variant, name, signature, Visibility::Public, line);
+    decl.body_lines = body_lines;
+    Some(decl)
 }
 
 fn extract_namespace(node: Node<'_>, source: &str) -> Option<Declaration> {
@@ -539,15 +643,12 @@ fn extract_namespace(node: Node<'_>, source: &str) -> Option<Declaration> {
         extract_top_level(body, source, &mut child_imports, &mut child_decls);
     }
 
-    Some(Declaration {
-        kind: DeclKind::Module,
-        name,
-        signature,
-        visibility: Visibility::Public,
-        line,
-        doc_comment: None,
-        children: child_decls,
-    })
+    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+
+    let mut decl = Declaration::new(DeclKind::Module, name, signature, Visibility::Public, line);
+    decl.children = child_decls;
+    decl.body_lines = body_lines;
+    Some(decl)
 }
 
 fn extract_template(node: Node<'_>, source: &str) -> Option<Declaration> {
@@ -568,6 +669,8 @@ fn extract_template(node: Node<'_>, source: &str) -> Option<Declaration> {
             decl.signature = decl.signature.split_whitespace().collect::<Vec<_>>().join(" ");
             decl.doc_comment = extract_doc_comment(node, source).or(decl.doc_comment);
             decl.line = node.start_position().row + 1;
+            decl.body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+            decl.is_deprecated = is_deprecated_cpp(node, source, &decl.doc_comment) || decl.is_deprecated;
             Some(decl)
         }
         "declaration" => {
@@ -576,6 +679,8 @@ fn extract_template(node: Node<'_>, source: &str) -> Option<Declaration> {
             decl.signature = decl.signature.split_whitespace().collect::<Vec<_>>().join(" ");
             decl.doc_comment = extract_doc_comment(node, source).or(decl.doc_comment);
             decl.line = node.start_position().row + 1;
+            decl.body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+            decl.is_deprecated = is_deprecated_cpp(node, source, &decl.doc_comment) || decl.is_deprecated;
             Some(decl)
         }
         "class_specifier" => {
@@ -584,6 +689,8 @@ fn extract_template(node: Node<'_>, source: &str) -> Option<Declaration> {
             decl.signature = decl.signature.split_whitespace().collect::<Vec<_>>().join(" ");
             decl.doc_comment = extract_doc_comment(node, source).or(decl.doc_comment);
             decl.line = node.start_position().row + 1;
+            decl.body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+            decl.is_deprecated = is_deprecated_cpp(node, source, &decl.doc_comment) || decl.is_deprecated;
             Some(decl)
         }
         "struct_specifier" => {
@@ -592,6 +699,8 @@ fn extract_template(node: Node<'_>, source: &str) -> Option<Declaration> {
             decl.signature = decl.signature.split_whitespace().collect::<Vec<_>>().join(" ");
             decl.doc_comment = extract_doc_comment(node, source).or(decl.doc_comment);
             decl.line = node.start_position().row + 1;
+            decl.body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+            decl.is_deprecated = is_deprecated_cpp(node, source, &decl.doc_comment) || decl.is_deprecated;
             Some(decl)
         }
         _ => {
@@ -606,15 +715,14 @@ fn extract_template(node: Node<'_>, source: &str) -> Option<Declaration> {
                 .map(|n| node_text(n, source).to_string())
                 .unwrap_or_else(|| node_text(inner, source).split_whitespace().next().unwrap_or("unknown").to_string());
 
-            Some(Declaration {
-                kind: DeclKind::Function,
-                name,
-                signature,
-                visibility: Visibility::Public,
-                line,
-                doc_comment,
-                children: Vec::new(),
-            })
+            let is_deprecated = is_deprecated_cpp(node, source, &doc_comment);
+            let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+
+            let mut decl = Declaration::new(DeclKind::Function, name, signature, Visibility::Public, line);
+            decl.doc_comment = doc_comment;
+            decl.is_deprecated = is_deprecated;
+            decl.body_lines = body_lines;
+            Some(decl)
         }
     }
 }
@@ -629,15 +737,14 @@ fn extract_typedef(node: Node<'_>, source: &str) -> Option<Declaration> {
         .unwrap_or_else(|| node_text(declarator, source))
         .to_string();
 
-    Some(Declaration {
-        kind: DeclKind::TypeAlias,
-        name,
-        signature,
-        visibility: Visibility::Public,
-        line,
-        doc_comment,
-        children: Vec::new(),
-    })
+    let is_deprecated = is_deprecated_cpp(node, source, &doc_comment);
+    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+
+    let mut decl = Declaration::new(DeclKind::TypeAlias, name, signature, Visibility::Public, line);
+    decl.doc_comment = doc_comment;
+    decl.is_deprecated = is_deprecated;
+    decl.body_lines = body_lines;
+    Some(decl)
 }
 
 fn extract_preproc_def(node: Node<'_>, source: &str) -> Option<Declaration> {
@@ -650,13 +757,12 @@ fn extract_preproc_def(node: Node<'_>, source: &str) -> Option<Declaration> {
         .collect::<Vec<_>>()
         .join(" ");
 
-    Some(Declaration {
-        kind: DeclKind::Constant,
-        name,
-        signature,
-        visibility: Visibility::Public,
-        line,
-        doc_comment,
-        children: Vec::new(),
-    })
+    let is_deprecated = is_deprecated_cpp(node, source, &doc_comment);
+    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+
+    let mut decl = Declaration::new(DeclKind::Constant, name, signature, Visibility::Public, line);
+    decl.doc_comment = doc_comment;
+    decl.is_deprecated = is_deprecated;
+    decl.body_lines = body_lines;
+    Some(decl)
 }

@@ -1,7 +1,7 @@
 use tree_sitter::Node;
 
 use crate::model::Import;
-use crate::model::declarations::{DeclKind, Declaration, Visibility};
+use crate::model::declarations::{DeclKind, Declaration, Visibility, Relationship, RelKind};
 
 use super::DeclExtractor;
 
@@ -140,6 +140,111 @@ fn extract_import(node: Node<'_>, source: &str) -> Option<Import> {
     })
 }
 
+/// Check if a node has a specific annotation by looking at its previous siblings.
+fn has_annotation(node: Node<'_>, source: &str, annotation_name: &str) -> bool {
+    let mut prev = node.prev_sibling();
+    while let Some(sibling) = prev {
+        match sibling.kind() {
+            "marker_annotation" | "annotation" => {
+                let text = node_text(sibling, source);
+                // Annotation text is like "@Test" or "@Deprecated"
+                if text.contains(annotation_name) {
+                    return true;
+                }
+                prev = sibling.prev_sibling();
+                continue;
+            }
+            _ => break,
+        }
+    }
+
+    // Also check inside modifiers node
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if child.kind() == "modifiers" {
+                for j in 0..child.child_count() {
+                    if let Some(mod_child) = child.child(j) {
+                        if mod_child.kind() == "marker_annotation" || mod_child.kind() == "annotation" {
+                            let text = node_text(mod_child, source);
+                            if text.contains(annotation_name) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    false
+}
+
+/// Extract class relationships (extends and implements) from Java class declarations.
+fn extract_class_relationships(node: Node<'_>, source: &str) -> Vec<Relationship> {
+    let mut relationships = Vec::new();
+
+    // Check for superclass field
+    if let Some(superclass) = node.child_by_field_name("superclass") {
+        // superclass node text is typically like "extends Foo"
+        let text = node_text(superclass, source).trim();
+        let target = text.strip_prefix("extends ").unwrap_or(text).trim();
+        if !target.is_empty() {
+            relationships.push(Relationship {
+                kind: RelKind::Extends,
+                target: target.to_string(),
+            });
+        }
+    }
+
+    // Check for interfaces field
+    if let Some(interfaces) = node.child_by_field_name("interfaces") {
+        // interfaces node text is typically like "implements Foo, Bar"
+        let text = node_text(interfaces, source).trim();
+        let text = text.strip_prefix("implements ").unwrap_or(text).trim();
+        for target in text.split(',') {
+            let target = target.trim();
+            if !target.is_empty() {
+                relationships.push(Relationship {
+                    kind: RelKind::Implements,
+                    target: target.to_string(),
+                });
+            }
+        }
+    }
+
+    // Fallback: parse from signature if fields not found
+    if relationships.is_empty() {
+        let sig = extract_signature(node, source);
+        if let Some(pos) = sig.find("extends ") {
+            let after = &sig[pos + 8..];
+            let end = after.find("implements").or_else(|| after.find('{')).unwrap_or(after.len());
+            let target = after[..end].trim().trim_end_matches('{').trim();
+            if !target.is_empty() {
+                relationships.push(Relationship {
+                    kind: RelKind::Extends,
+                    target: target.to_string(),
+                });
+            }
+        }
+        if let Some(pos) = sig.find("implements ") {
+            let after = &sig[pos + 11..];
+            let end = after.find('{').unwrap_or(after.len());
+            let implements_str = after[..end].trim();
+            for target in implements_str.split(',') {
+                let target = target.trim();
+                if !target.is_empty() {
+                    relationships.push(Relationship {
+                        kind: RelKind::Implements,
+                        target: target.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    relationships
+}
+
 fn extract_class(node: Node<'_>, source: &str) -> Option<Declaration> {
     let name_node = node.child_by_field_name("name")?;
     let name = node_text(name_node, source).to_string();
@@ -190,15 +295,19 @@ fn extract_class(node: Node<'_>, source: &str) -> Option<Declaration> {
         }
     }
 
-    Some(Declaration {
-        kind: DeclKind::Struct,
-        name,
-        signature,
-        visibility,
-        line,
-        doc_comment,
-        children,
-    })
+    let is_deprecated = has_annotation(node, source, "Deprecated");
+    let is_test = has_annotation(node, source, "Test");
+    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+    let relationships = extract_class_relationships(node, source);
+
+    let mut decl = Declaration::new(DeclKind::Struct, name, signature, visibility, line);
+    decl.doc_comment = doc_comment;
+    decl.children = children;
+    decl.is_test = is_test;
+    decl.is_deprecated = is_deprecated;
+    decl.body_lines = body_lines;
+    decl.relationships = relationships;
+    Some(decl)
 }
 
 fn extract_interface(node: Node<'_>, source: &str) -> Option<Declaration> {
@@ -223,15 +332,34 @@ fn extract_interface(node: Node<'_>, source: &str) -> Option<Declaration> {
         }
     }
 
-    Some(Declaration {
-        kind: DeclKind::Trait,
-        name,
-        signature,
-        visibility,
-        line,
-        doc_comment,
-        children: methods,
-    })
+    let is_deprecated = has_annotation(node, source, "Deprecated");
+    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+
+    // Interfaces can extend other interfaces
+    let mut relationships = Vec::new();
+    let sig = extract_signature(node, source);
+    if let Some(pos) = sig.find("extends ") {
+        let after = &sig[pos + 8..];
+        let end = after.find('{').unwrap_or(after.len());
+        let extends_str = after[..end].trim();
+        for target in extends_str.split(',') {
+            let target = target.trim();
+            if !target.is_empty() {
+                relationships.push(Relationship {
+                    kind: RelKind::Extends,
+                    target: target.to_string(),
+                });
+            }
+        }
+    }
+
+    let mut decl = Declaration::new(DeclKind::Trait, name, signature, visibility, line);
+    decl.doc_comment = doc_comment;
+    decl.children = methods;
+    decl.is_deprecated = is_deprecated;
+    decl.body_lines = body_lines;
+    decl.relationships = relationships;
+    Some(decl)
 }
 
 fn extract_enum(node: Node<'_>, source: &str) -> Option<Declaration> {
@@ -256,15 +384,15 @@ fn extract_enum(node: Node<'_>, source: &str) -> Option<Declaration> {
         }
     }
 
-    Some(Declaration {
-        kind: DeclKind::Enum,
-        name,
-        signature,
-        visibility,
-        line,
-        doc_comment,
-        children: variants,
-    })
+    let is_deprecated = has_annotation(node, source, "Deprecated");
+    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+
+    let mut decl = Declaration::new(DeclKind::Enum, name, signature, visibility, line);
+    decl.doc_comment = doc_comment;
+    decl.children = variants;
+    decl.is_deprecated = is_deprecated;
+    decl.body_lines = body_lines;
+    Some(decl)
 }
 
 fn extract_enum_constant(node: Node<'_>, source: &str) -> Option<Declaration> {
@@ -274,15 +402,11 @@ fn extract_enum_constant(node: Node<'_>, source: &str) -> Option<Declaration> {
     let text = node_text(node, source).trim().trim_end_matches(',');
     let signature = text.split_whitespace().collect::<Vec<_>>().join(" ");
 
-    Some(Declaration {
-        kind: DeclKind::Variant,
-        name,
-        signature,
-        visibility: Visibility::Public,
-        line,
-        doc_comment: None,
-        children: Vec::new(),
-    })
+    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+
+    let mut decl = Declaration::new(DeclKind::Variant, name, signature, Visibility::Public, line);
+    decl.body_lines = body_lines;
+    Some(decl)
 }
 
 fn extract_method(node: Node<'_>, source: &str) -> Option<Declaration> {
@@ -306,15 +430,16 @@ fn extract_method(node: Node<'_>, source: &str) -> Option<Declaration> {
     let signature = sig_parts.join(" ");
     let signature = signature.split_whitespace().collect::<Vec<_>>().join(" ");
 
-    Some(Declaration {
-        kind: DeclKind::Method,
-        name,
-        signature,
-        visibility,
-        line,
-        doc_comment,
-        children: Vec::new(),
-    })
+    let is_test = has_annotation(node, source, "Test");
+    let is_deprecated = has_annotation(node, source, "Deprecated");
+    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+
+    let mut decl = Declaration::new(DeclKind::Method, name, signature, visibility, line);
+    decl.doc_comment = doc_comment;
+    decl.is_test = is_test;
+    decl.is_deprecated = is_deprecated;
+    decl.body_lines = body_lines;
+    Some(decl)
 }
 
 fn extract_constructor(node: Node<'_>, source: &str) -> Option<Declaration> {
@@ -335,15 +460,14 @@ fn extract_constructor(node: Node<'_>, source: &str) -> Option<Declaration> {
     let signature = sig_parts.join(" ");
     let signature = signature.split_whitespace().collect::<Vec<_>>().join(" ");
 
-    Some(Declaration {
-        kind: DeclKind::Method,
-        name,
-        signature,
-        visibility,
-        line,
-        doc_comment,
-        children: Vec::new(),
-    })
+    let is_deprecated = has_annotation(node, source, "Deprecated");
+    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+
+    let mut decl = Declaration::new(DeclKind::Method, name, signature, visibility, line);
+    decl.doc_comment = doc_comment;
+    decl.is_deprecated = is_deprecated;
+    decl.body_lines = body_lines;
+    Some(decl)
 }
 
 fn extract_field(node: Node<'_>, source: &str) -> Option<Declaration> {
@@ -369,13 +493,11 @@ fn extract_field(node: Node<'_>, source: &str) -> Option<Declaration> {
     let signature = sig_parts.join(" ");
     let signature = signature.split_whitespace().collect::<Vec<_>>().join(" ");
 
-    Some(Declaration {
-        kind: DeclKind::Field,
-        name,
-        signature,
-        visibility,
-        line,
-        doc_comment: None,
-        children: Vec::new(),
-    })
+    let is_deprecated = has_annotation(node, source, "Deprecated");
+    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+
+    let mut decl = Declaration::new(DeclKind::Field, name, signature, visibility, line);
+    decl.is_deprecated = is_deprecated;
+    decl.body_lines = body_lines;
+    Some(decl)
 }
