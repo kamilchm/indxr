@@ -1,7 +1,7 @@
 use std::io::{self, BufRead, Write};
 
 use serde::{Deserialize, Serialize};
-use serde_json::{self, json, Value};
+use serde_json::{self, Value, json};
 
 use crate::model::declarations::{DeclKind, Declaration};
 use crate::model::{CodebaseIndex, FileIndex};

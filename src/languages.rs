@@ -44,11 +44,14 @@ impl Language {
                 "Cargo.toml" | "pyproject.toml" | "Pipfile" => return Some(Language::Toml),
                 "package.json" | "tsconfig.json" | "composer.json" => return Some(Language::Json),
                 "docker-compose.yml" | "docker-compose.yaml" => return Some(Language::Yaml),
-                ".bashrc" | ".zshrc" | ".bash_profile" | ".profile" => return Some(Language::Shell),
+                ".bashrc" | ".zshrc" | ".bash_profile" | ".profile" => {
+                    return Some(Language::Shell);
+                }
                 "Gemfile" | "Rakefile" => return Some(Language::Ruby),
                 "CMakeLists.txt" => return Some(Language::Cmake),
-                "build.gradle" | "settings.gradle" | "build.gradle.kts"
-                | "settings.gradle.kts" => return Some(Language::Gradle),
+                "build.gradle" | "settings.gradle" | "build.gradle.kts" | "settings.gradle.kts" => {
+                    return Some(Language::Gradle);
+                }
                 _ => {}
             }
         }

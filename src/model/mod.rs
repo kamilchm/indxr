@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::languages::Language;
 use self::declarations::Declaration;
+use crate::languages::Language;
 
 #[derive(Debug, Clone, Copy, PartialEq, clap::ValueEnum)]
 pub enum DetailLevel {

@@ -4,7 +4,7 @@ use crate::model::declarations::{Declaration, Visibility};
 /// Estimate the number of tokens in a string.
 /// Uses the approximation: 1 token ~ 4 characters for English/code text.
 pub fn estimate_tokens(text: &str) -> usize {
-    (text.len() + 3) / 4
+    text.len().div_ceil(4)
 }
 
 /// Estimate the total token count of a CodebaseIndex when rendered as markdown.
@@ -95,8 +95,8 @@ fn file_importance(file: &crate::model::FileIndex) -> i64 {
 
     // Entry points are most important
     match filename.as_str() {
-        "main.rs" | "main.py" | "main.go" | "main.ts" | "main.js" | "main.java"
-        | "index.ts" | "index.js" | "index.tsx" | "index.jsx" => score += 100,
+        "main.rs" | "main.py" | "main.go" | "main.ts" | "main.js" | "main.java" | "index.ts"
+        | "index.js" | "index.tsx" | "index.jsx" => score += 100,
         "lib.rs" | "lib.py" => score += 90,
         "mod.rs" | "__init__.py" | "mod.ts" => score += 50,
         _ => {}
@@ -184,9 +184,7 @@ pub fn apply_token_budget(index: &mut CodebaseIndex, max_tokens: usize) {
 
     // Stage 5: Drop least-important files until we fit
     // Sort by importance ascending so we pop the least important
-    index.files.sort_by(|a, b| {
-        file_importance(a).cmp(&file_importance(b))
-    });
+    index.files.sort_by_key(file_importance);
 
     while index.files.len() > 1 && current > max_tokens {
         if let Some(dropped) = index.files.first() {
@@ -204,26 +202,26 @@ pub fn apply_token_budget(index: &mut CodebaseIndex, max_tokens: usize) {
 fn truncate_doc_comments(decls: &mut [Declaration], max_len: usize) -> usize {
     let mut saved = 0usize;
     for decl in decls.iter_mut() {
-        if let Some(ref mut doc) = decl.doc_comment {
-            if doc.len() > max_len {
-                let old_tokens = estimate_tokens(doc);
-                // Take first line, or first sentence, whichever is shorter
-                let truncated = doc
-                    .split('\n')
-                    .next()
-                    .unwrap_or(doc)
-                    .chars()
-                    .take(max_len)
-                    .collect::<String>();
-                let new_doc = if truncated.len() < doc.len() {
-                    format!("{}...", truncated.trim_end_matches('.'))
-                } else {
-                    truncated
-                };
-                let new_tokens = estimate_tokens(&new_doc);
-                saved += old_tokens.saturating_sub(new_tokens);
-                *doc = new_doc;
-            }
+        if let Some(ref mut doc) = decl.doc_comment
+            && doc.len() > max_len
+        {
+            let old_tokens = estimate_tokens(doc);
+            // Take first line, or first sentence, whichever is shorter
+            let truncated = doc
+                .split('\n')
+                .next()
+                .unwrap_or(doc)
+                .chars()
+                .take(max_len)
+                .collect::<String>();
+            let new_doc = if truncated.len() < doc.len() {
+                format!("{}...", truncated.trim_end_matches('.'))
+            } else {
+                truncated
+            };
+            let new_tokens = estimate_tokens(&new_doc);
+            saved += old_tokens.saturating_sub(new_tokens);
+            *doc = new_doc;
         }
         saved += truncate_doc_comments(&mut decl.children, max_len);
     }

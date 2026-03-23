@@ -142,19 +142,19 @@ fn extract_include(node: Node<'_>, source: &str) -> Option<Import> {
 /// function_definition -> declarator (function_declarator) -> declarator (identifier)
 fn extract_function_name<'a>(declarator: Node<'_>, source: &'a str) -> Option<&'a str> {
     // The declarator field of a function_declarator is the actual identifier
-    if declarator.kind() == "function_declarator" {
-        if let Some(inner) = declarator.child_by_field_name("declarator") {
-            if inner.kind() == "identifier" {
-                return Some(node_text(inner, source));
-            }
-            // Could be pointer_declarator wrapping the identifier
-            return extract_function_name(inner, source);
+    if declarator.kind() == "function_declarator"
+        && let Some(inner) = declarator.child_by_field_name("declarator")
+    {
+        if inner.kind() == "identifier" {
+            return Some(node_text(inner, source));
         }
+        // Could be pointer_declarator wrapping the identifier
+        return extract_function_name(inner, source);
     }
-    if declarator.kind() == "pointer_declarator" {
-        if let Some(inner) = declarator.child_by_field_name("declarator") {
-            return extract_function_name(inner, source);
-        }
+    if declarator.kind() == "pointer_declarator"
+        && let Some(inner) = declarator.child_by_field_name("declarator")
+    {
+        return extract_function_name(inner, source);
     }
     if declarator.kind() == "identifier" {
         return Some(node_text(declarator, source));
@@ -171,8 +171,14 @@ fn extract_function_definition(node: Node<'_>, source: &str) -> Option<Declarati
     let line = node.start_position().row + 1;
 
     let is_test = name.starts_with("test_");
-    let is_deprecated = doc_comment.as_ref().map_or(false, |d| d.to_lowercase().contains("deprecated"));
-    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+    let is_deprecated = doc_comment
+        .as_ref()
+        .is_some_and(|d| d.to_lowercase().contains("deprecated"));
+    let body_lines = Some(
+        node.end_position()
+            .row
+            .saturating_sub(node.start_position().row),
+    );
 
     let mut decl = Declaration::new(DeclKind::Function, name, signature, visibility, line);
     decl.doc_comment = doc_comment;
@@ -196,8 +202,14 @@ fn extract_declaration(node: Node<'_>, source: &str) -> Option<Declaration> {
         let line = node.start_position().row + 1;
 
         let is_test = name.starts_with("test_");
-        let is_deprecated = doc_comment.as_ref().map_or(false, |d| d.to_lowercase().contains("deprecated"));
-        let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+        let is_deprecated = doc_comment
+            .as_ref()
+            .is_some_and(|d| d.to_lowercase().contains("deprecated"));
+        let body_lines = Some(
+            node.end_position()
+                .row
+                .saturating_sub(node.start_position().row),
+        );
 
         let mut decl = Declaration::new(DeclKind::Function, name, signature, visibility, line);
         decl.doc_comment = doc_comment;
@@ -213,8 +225,14 @@ fn extract_declaration(node: Node<'_>, source: &str) -> Option<Declaration> {
         let signature = extract_signature(node, source);
         let line = node.start_position().row + 1;
 
-        let is_deprecated = doc_comment.as_ref().map_or(false, |d| d.to_lowercase().contains("deprecated"));
-        let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+        let is_deprecated = doc_comment
+            .as_ref()
+            .is_some_and(|d| d.to_lowercase().contains("deprecated"));
+        let body_lines = Some(
+            node.end_position()
+                .row
+                .saturating_sub(node.start_position().row),
+        );
 
         let mut decl = Declaration::new(DeclKind::Static, name, signature, visibility, line);
         decl.doc_comment = doc_comment;
@@ -229,10 +247,10 @@ fn has_function_declarator(node: Node<'_>) -> bool {
         return true;
     }
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if has_function_declarator(child) {
-                return true;
-            }
+        if let Some(child) = node.child(i)
+            && has_function_declarator(child)
+        {
+            return true;
         }
     }
     false
@@ -244,10 +262,10 @@ fn extract_function_name_from_decl<'a>(node: Node<'_>, source: &'a str) -> Optio
     }
     // Look for a function_declarator child
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if let Some(name) = extract_function_name_from_decl(child, source) {
-                return Some(name);
-            }
+        if let Some(child) = node.child(i)
+            && let Some(name) = extract_function_name_from_decl(child, source)
+        {
+            return Some(name);
         }
     }
     None
@@ -255,18 +273,18 @@ fn extract_function_name_from_decl<'a>(node: Node<'_>, source: &'a str) -> Optio
 
 fn extract_var_name<'a>(node: Node<'_>, source: &'a str) -> Option<&'a str> {
     // init_declarator has field "declarator" which is the identifier
-    if node.kind() == "init_declarator" {
-        if let Some(inner) = node.child_by_field_name("declarator") {
-            return extract_var_name(inner, source);
-        }
+    if node.kind() == "init_declarator"
+        && let Some(inner) = node.child_by_field_name("declarator")
+    {
+        return extract_var_name(inner, source);
     }
     if node.kind() == "identifier" {
         return Some(node_text(node, source));
     }
-    if node.kind() == "pointer_declarator" {
-        if let Some(inner) = node.child_by_field_name("declarator") {
-            return extract_var_name(inner, source);
-        }
+    if node.kind() == "pointer_declarator"
+        && let Some(inner) = node.child_by_field_name("declarator")
+    {
+        return extract_var_name(inner, source);
     }
     // Try the name field
     if let Some(name_node) = node.child_by_field_name("name") {
@@ -285,18 +303,23 @@ fn extract_struct(node: Node<'_>, source: &str) -> Option<Declaration> {
     let mut fields = Vec::new();
     if let Some(body) = node.child_by_field_name("body") {
         for i in 0..body.child_count() {
-            if let Some(child) = body.child(i) {
-                if child.kind() == "field_declaration" {
-                    if let Some(field) = extract_struct_field(child, source) {
-                        fields.push(field);
-                    }
-                }
+            if let Some(child) = body.child(i)
+                && child.kind() == "field_declaration"
+                && let Some(field) = extract_struct_field(child, source)
+            {
+                fields.push(field);
             }
         }
     }
 
-    let is_deprecated = doc_comment.as_ref().map_or(false, |d| d.to_lowercase().contains("deprecated"));
-    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+    let is_deprecated = doc_comment
+        .as_ref()
+        .is_some_and(|d| d.to_lowercase().contains("deprecated"));
+    let body_lines = Some(
+        node.end_position()
+            .row
+            .saturating_sub(node.start_position().row),
+    );
 
     let mut decl = Declaration::new(DeclKind::Struct, name, signature, Visibility::Public, line);
     decl.doc_comment = doc_comment;
@@ -319,7 +342,11 @@ fn extract_struct_field(node: Node<'_>, source: &str) -> Option<Declaration> {
     let signature = format!("{} {}", type_text, name);
     let signature = signature.split_whitespace().collect::<Vec<_>>().join(" ");
 
-    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+    let body_lines = Some(
+        node.end_position()
+            .row
+            .saturating_sub(node.start_position().row),
+    );
 
     let mut decl = Declaration::new(DeclKind::Field, name, signature, Visibility::Public, line);
     decl.body_lines = body_lines;
@@ -336,18 +363,23 @@ fn extract_enum(node: Node<'_>, source: &str) -> Option<Declaration> {
     let mut variants = Vec::new();
     if let Some(body) = node.child_by_field_name("body") {
         for i in 0..body.child_count() {
-            if let Some(child) = body.child(i) {
-                if child.kind() == "enumerator" {
-                    if let Some(variant) = extract_enumerator(child, source) {
-                        variants.push(variant);
-                    }
-                }
+            if let Some(child) = body.child(i)
+                && child.kind() == "enumerator"
+                && let Some(variant) = extract_enumerator(child, source)
+            {
+                variants.push(variant);
             }
         }
     }
 
-    let is_deprecated = doc_comment.as_ref().map_or(false, |d| d.to_lowercase().contains("deprecated"));
-    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+    let is_deprecated = doc_comment
+        .as_ref()
+        .is_some_and(|d| d.to_lowercase().contains("deprecated"));
+    let body_lines = Some(
+        node.end_position()
+            .row
+            .saturating_sub(node.start_position().row),
+    );
 
     let mut decl = Declaration::new(DeclKind::Enum, name, signature, Visibility::Public, line);
     decl.doc_comment = doc_comment;
@@ -364,7 +396,11 @@ fn extract_enumerator(node: Node<'_>, source: &str) -> Option<Declaration> {
     let text = node_text(node, source).trim().trim_end_matches(',');
     let signature = text.split_whitespace().collect::<Vec<_>>().join(" ");
 
-    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+    let body_lines = Some(
+        node.end_position()
+            .row
+            .saturating_sub(node.start_position().row),
+    );
 
     let mut decl = Declaration::new(DeclKind::Variant, name, signature, Visibility::Public, line);
     decl.body_lines = body_lines;
@@ -383,10 +419,22 @@ fn extract_typedef(node: Node<'_>, source: &str) -> Option<Declaration> {
         .unwrap_or_else(|| node_text(declarator, source))
         .to_string();
 
-    let is_deprecated = doc_comment.as_ref().map_or(false, |d| d.to_lowercase().contains("deprecated"));
-    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+    let is_deprecated = doc_comment
+        .as_ref()
+        .is_some_and(|d| d.to_lowercase().contains("deprecated"));
+    let body_lines = Some(
+        node.end_position()
+            .row
+            .saturating_sub(node.start_position().row),
+    );
 
-    let mut decl = Declaration::new(DeclKind::TypeAlias, name, signature, Visibility::Public, line);
+    let mut decl = Declaration::new(
+        DeclKind::TypeAlias,
+        name,
+        signature,
+        Visibility::Public,
+        line,
+    );
     decl.doc_comment = doc_comment;
     decl.is_deprecated = is_deprecated;
     decl.body_lines = body_lines;
@@ -403,10 +451,22 @@ fn extract_preproc_def(node: Node<'_>, source: &str) -> Option<Declaration> {
         .collect::<Vec<_>>()
         .join(" ");
 
-    let is_deprecated = doc_comment.as_ref().map_or(false, |d| d.to_lowercase().contains("deprecated"));
-    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+    let is_deprecated = doc_comment
+        .as_ref()
+        .is_some_and(|d| d.to_lowercase().contains("deprecated"));
+    let body_lines = Some(
+        node.end_position()
+            .row
+            .saturating_sub(node.start_position().row),
+    );
 
-    let mut decl = Declaration::new(DeclKind::Constant, name, signature, Visibility::Public, line);
+    let mut decl = Declaration::new(
+        DeclKind::Constant,
+        name,
+        signature,
+        Visibility::Public,
+        line,
+    );
     decl.doc_comment = doc_comment;
     decl.is_deprecated = is_deprecated;
     decl.body_lines = body_lines;

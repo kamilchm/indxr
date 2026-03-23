@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::model::CodebaseIndex;
-use crate::model::declarations::{Declaration, DeclKind, Visibility};
+use crate::model::declarations::{DeclKind, Declaration, Visibility};
 
 pub struct FilterOptions {
     pub filter_path: Option<String>,
@@ -12,7 +12,10 @@ pub struct FilterOptions {
 
 impl FilterOptions {
     pub fn is_active(&self) -> bool {
-        self.filter_path.is_some() || self.symbol.is_some() || self.kind.is_some() || self.public_only
+        self.filter_path.is_some()
+            || self.symbol.is_some()
+            || self.kind.is_some()
+            || self.public_only
     }
 }
 
@@ -26,7 +29,9 @@ pub fn apply_filters(index: &mut CodebaseIndex, opts: &FilterOptions) {
     // 1. Filter by path prefix
     if let Some(ref prefix) = opts.filter_path {
         let prefix_path = Path::new(prefix);
-        index.files.retain(|file| file.path.starts_with(prefix_path));
+        index
+            .files
+            .retain(|file| file.path.starts_with(prefix_path));
         index.tree.retain(|entry| {
             let entry_path = Path::new(&entry.path);
             entry_path.starts_with(prefix_path) || prefix_path.starts_with(entry_path)

@@ -52,10 +52,7 @@ pub struct DeclModification {
 /// Also determines which files were purely added (`--diff-filter=A`) and purely
 /// deleted (`--diff-filter=D`). Returns a tuple of
 /// `(all_changed, added_only, deleted_only)`.
-pub fn get_changed_files(
-    root: &Path,
-    since_ref: &str,
-) -> Result<Vec<PathBuf>> {
+pub fn get_changed_files(root: &Path, since_ref: &str) -> Result<Vec<PathBuf>> {
     git_diff_names(root, since_ref, None)
 }
 
@@ -73,15 +70,9 @@ pub fn get_deleted_files(root: &Path, since_ref: &str) -> Result<Vec<PathBuf>> {
 
 /// Helper: execute `git diff --name-only [--diff-filter=<filter>] <ref>...HEAD`
 /// and return the list of paths.
-fn git_diff_names(
-    root: &Path,
-    since_ref: &str,
-    diff_filter: Option<&str>,
-) -> Result<Vec<PathBuf>> {
+fn git_diff_names(root: &Path, since_ref: &str, diff_filter: Option<&str>) -> Result<Vec<PathBuf>> {
     let mut cmd = Command::new("git");
-    cmd.current_dir(root)
-        .arg("diff")
-        .arg("--name-only");
+    cmd.current_dir(root).arg("diff").arg("--name-only");
 
     if let Some(filter) = diff_filter {
         cmd.arg(format!("--diff-filter={filter}"));
@@ -89,9 +80,7 @@ fn git_diff_names(
 
     cmd.arg(format!("{since_ref}...HEAD"));
 
-    let output = cmd
-        .output()
-        .context("failed to execute git diff")?;
+    let output = cmd.output().context("failed to execute git diff")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -116,11 +105,7 @@ fn git_diff_names(
 /// given `git_ref` via `git show <ref>:<path>`.
 ///
 /// Returns `None` when the file did not exist at that ref.
-pub fn get_file_at_ref(
-    root: &Path,
-    file_path: &Path,
-    git_ref: &str,
-) -> Result<Option<String>> {
+pub fn get_file_at_ref(root: &Path, file_path: &Path, git_ref: &str) -> Result<Option<String>> {
     let spec = format!("{git_ref}:{}", file_path.display());
 
     let output = Command::new("git")
@@ -228,11 +213,7 @@ pub fn compute_structural_diff(
 }
 
 /// Diff two slices of declarations by matching on `(kind, name)` pairs.
-fn diff_declarations(
-    path: PathBuf,
-    old: &[Declaration],
-    new: &[Declaration],
-) -> FileDiff {
+fn diff_declarations(path: PathBuf, old: &[Declaration], new: &[Declaration]) -> FileDiff {
     let old_map = flatten_declarations(old);
     let new_map = flatten_declarations(new);
 
@@ -429,7 +410,10 @@ mod tests {
         assert!(diff.declarations_added.is_empty());
         assert!(diff.declarations_removed.is_empty());
         assert_eq!(diff.declarations_modified.len(), 1);
-        assert_eq!(diff.declarations_modified[0].old_signature, "fn baz(x: i32)");
+        assert_eq!(
+            diff.declarations_modified[0].old_signature,
+            "fn baz(x: i32)"
+        );
         assert_eq!(
             diff.declarations_modified[0].new_signature,
             "fn baz(x: i32, y: i32)"
@@ -481,9 +465,7 @@ mod tests {
         assert!(md.contains("- src/old.rs"));
         assert!(md.contains("+ `pub fn new_fn(x: i32) -> bool`"));
         assert!(md.contains("- `fn old_fn()`"));
-        assert!(md.contains(
-            "~ `fn changed_fn(x: i32)` -> `fn changed_fn(x: i32, y: i32)`"
-        ));
+        assert!(md.contains("~ `fn changed_fn(x: i32)` -> `fn changed_fn(x: i32, y: i32)`"));
     }
 
     #[test]

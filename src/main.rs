@@ -25,9 +25,9 @@ use crate::filter::FilterOptions;
 use crate::languages::Language;
 use crate::model::declarations::DeclKind;
 use crate::model::{CodebaseIndex, IndexStats};
+use crate::output::OutputFormatter;
 use crate::output::markdown::{MarkdownFormatter, MarkdownOptions};
 use crate::output::yaml::YamlFormatter;
-use crate::output::OutputFormatter;
 use crate::parser::ParserRegistry;
 
 fn main() -> Result<()> {
@@ -63,8 +63,7 @@ fn main() -> Result<()> {
 
         let file_refs: Vec<&walker::FileEntry> = walk_result.files.iter().collect();
         let results = parse_files(&file_refs, &cache, &registry);
-        let (file_indices, total_lines, language_counts, _) =
-            collect_results(results, &mut cache);
+        let (file_indices, total_lines, language_counts, _) = collect_results(results, &mut cache);
         cache.prune(
             &walk_result
                 .files
@@ -131,7 +130,7 @@ fn main() -> Result<()> {
         .filter(|f| {
             lang_filter
                 .as_ref()
-                .map_or(true, |filter| filter.contains(&f.language))
+                .is_none_or(|filter| filter.contains(&f.language))
         })
         .collect();
 
@@ -156,8 +155,7 @@ fn main() -> Result<()> {
     file_indices.sort_by(|a, b| a.path.cmp(&b.path));
 
     // Prune stale cache entries
-    let existing: Vec<std::path::PathBuf> =
-        files.iter().map(|f| f.relative_path.clone()).collect();
+    let existing: Vec<std::path::PathBuf> = files.iter().map(|f| f.relative_path.clone()).collect();
     cache.prune(&existing);
     cache.save()?;
 
@@ -272,11 +270,9 @@ fn parse_files(
             let file_entry = *file_entry;
 
             // Check cache first
-            if let Some(cached) = cache.get(
-                &file_entry.relative_path,
-                file_entry.size,
-                file_entry.mtime,
-            ) {
+            if let Some(cached) =
+                cache.get(&file_entry.relative_path, file_entry.size, file_entry.mtime)
+            {
                 return Some(ParseResult {
                     file_index: cached,
                     relative_path: file_entry.relative_path.clone(),
@@ -353,14 +349,12 @@ fn handle_git_diff(
     // Get old file contents and parse them
     let mut old_files: HashMap<std::path::PathBuf, model::FileIndex> = HashMap::new();
     for path in &changed_paths {
-        if let Ok(Some(old_content)) = diff::get_file_at_ref(root, path, since_ref) {
-            if let Some(lang) = Language::detect(path) {
-                if let Some(parser) = registry.get_parser(&lang) {
-                    if let Ok(index) = parser.parse_file(path, &old_content) {
-                        old_files.insert(path.clone(), index);
-                    }
-                }
-            }
+        if let Ok(Some(old_content)) = diff::get_file_at_ref(root, path, since_ref)
+            && let Some(lang) = Language::detect(path)
+            && let Some(parser) = registry.get_parser(&lang)
+            && let Ok(index) = parser.parse_file(path, &old_content)
+        {
+            old_files.insert(path.clone(), index);
         }
     }
 
@@ -379,8 +373,7 @@ fn handle_git_diff(
         },
     };
 
-    let structural_diff =
-        diff::compute_structural_diff(&temp_index, &old_files, &changed_paths);
+    let structural_diff = diff::compute_structural_diff(&temp_index, &old_files, &changed_paths);
 
     match cli.format {
         OutputFormat::Json => {

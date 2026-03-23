@@ -1,7 +1,7 @@
 use tree_sitter::Node;
 
 use crate::model::Import;
-use crate::model::declarations::{DeclKind, Declaration, Visibility, Relationship, RelKind};
+use crate::model::declarations::{DeclKind, Declaration, RelKind, Relationship, Visibility};
 
 use super::DeclExtractor;
 
@@ -99,46 +99,40 @@ fn node_text<'a>(node: Node<'_>, source: &'a str) -> &'a str {
 fn extract_doc_comment(node: Node<'_>, source: &str) -> Option<String> {
     let mut prev = node.prev_sibling();
 
-    while let Some(sibling) = prev {
-        match sibling.kind() {
-            "comment" => {
-                let text = node_text(sibling, source);
-                if text.starts_with("/**") {
-                    let cleaned = text
-                        .trim_start_matches("/**")
-                        .trim_end_matches("*/")
-                        .trim()
-                        .to_string();
-                    return Some(cleaned);
-                }
-                return None;
-            }
-            _ => break,
+    if let Some(sibling) = prev
+        && sibling.kind() == "comment"
+    {
+        let text = node_text(sibling, source);
+        if text.starts_with("/**") {
+            let cleaned = text
+                .trim_start_matches("/**")
+                .trim_end_matches("*/")
+                .trim()
+                .to_string();
+            return Some(cleaned);
         }
+        return None;
     }
 
     // Also check if the node's parent is an export_statement and the
     // doc comment is before the export_statement.
-    if let Some(parent) = node.parent() {
-        if parent.kind() == "export_statement" {
-            prev = parent.prev_sibling();
-            while let Some(sibling) = prev {
-                match sibling.kind() {
-                    "comment" => {
-                        let text = node_text(sibling, source);
-                        if text.starts_with("/**") {
-                            let cleaned = text
-                                .trim_start_matches("/**")
-                                .trim_end_matches("*/")
-                                .trim()
-                                .to_string();
-                            return Some(cleaned);
-                        }
-                        return None;
-                    }
-                    _ => break,
-                }
+    if let Some(parent) = node.parent()
+        && parent.kind() == "export_statement"
+    {
+        prev = parent.prev_sibling();
+        if let Some(sibling) = prev
+            && sibling.kind() == "comment"
+        {
+            let text = node_text(sibling, source);
+            if text.starts_with("/**") {
+                let cleaned = text
+                    .trim_start_matches("/**")
+                    .trim_end_matches("*/")
+                    .trim()
+                    .to_string();
+                return Some(cleaned);
             }
+            return None;
         }
     }
 
@@ -149,34 +143,28 @@ fn extract_doc_comment(node: Node<'_>, source: &str) -> Option<String> {
 fn get_raw_doc_comment(node: Node<'_>, source: &str) -> Option<String> {
     let mut prev = node.prev_sibling();
 
-    while let Some(sibling) = prev {
-        match sibling.kind() {
-            "comment" => {
-                let text = node_text(sibling, source);
-                if text.starts_with("/**") {
-                    return Some(text.to_string());
-                }
-                return None;
-            }
-            _ => break,
+    if let Some(sibling) = prev
+        && sibling.kind() == "comment"
+    {
+        let text = node_text(sibling, source);
+        if text.starts_with("/**") {
+            return Some(text.to_string());
         }
+        return None;
     }
 
-    if let Some(parent) = node.parent() {
-        if parent.kind() == "export_statement" {
-            prev = parent.prev_sibling();
-            while let Some(sibling) = prev {
-                match sibling.kind() {
-                    "comment" => {
-                        let text = node_text(sibling, source);
-                        if text.starts_with("/**") {
-                            return Some(text.to_string());
-                        }
-                        return None;
-                    }
-                    _ => break,
-                }
+    if let Some(parent) = node.parent()
+        && parent.kind() == "export_statement"
+    {
+        prev = parent.prev_sibling();
+        if let Some(sibling) = prev
+            && sibling.kind() == "comment"
+        {
+            let text = node_text(sibling, source);
+            if text.starts_with("/**") {
+                return Some(text.to_string());
             }
+            return None;
         }
     }
 
@@ -212,7 +200,10 @@ fn extract_class_relationships(node: Node<'_>, source: &str) -> Vec<Relationship
     // Check for "extends Foo" (JavaScript has no implements)
     if let Some(pos) = sig.find("extends ") {
         let after = &sig[pos + 8..];
-        let target = after.split_whitespace().next().unwrap_or("")
+        let target = after
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
             .trim_end_matches('{')
             .trim_end_matches(',');
         if !target.is_empty() {
@@ -234,12 +225,22 @@ fn extract_function(node: Node<'_>, source: &str) -> Option<Declaration> {
     let line = node.start_position().row + 1;
 
     let raw_doc = get_raw_doc_comment(node, source);
-    let is_deprecated = raw_doc.as_ref().map_or(false, |d| d.contains("@deprecated"));
+    let is_deprecated = raw_doc.as_ref().is_some_and(|d| d.contains("@deprecated"));
     let is_async = signature.contains("async");
     let is_test = is_test_name(&name);
-    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+    let body_lines = Some(
+        node.end_position()
+            .row
+            .saturating_sub(node.start_position().row),
+    );
 
-    let mut decl = Declaration::new(DeclKind::Function, name, signature, Visibility::Private, line);
+    let mut decl = Declaration::new(
+        DeclKind::Function,
+        name,
+        signature,
+        Visibility::Private,
+        line,
+    );
     decl.doc_comment = doc_comment;
     decl.is_async = is_async;
     decl.is_test = is_test;
@@ -278,8 +279,12 @@ fn extract_class(node: Node<'_>, source: &str) -> Option<Declaration> {
     }
 
     let raw_doc = get_raw_doc_comment(node, source);
-    let is_deprecated = raw_doc.as_ref().map_or(false, |d| d.contains("@deprecated"));
-    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+    let is_deprecated = raw_doc.as_ref().is_some_and(|d| d.contains("@deprecated"));
+    let body_lines = Some(
+        node.end_position()
+            .row
+            .saturating_sub(node.start_position().row),
+    );
     let relationships = extract_class_relationships(node, source);
 
     let mut decl = Declaration::new(DeclKind::Struct, name, signature, Visibility::Private, line);
@@ -299,10 +304,14 @@ fn extract_method(node: Node<'_>, source: &str) -> Option<Declaration> {
     let line = node.start_position().row + 1;
 
     let raw_doc = get_raw_doc_comment(node, source);
-    let is_deprecated = raw_doc.as_ref().map_or(false, |d| d.contains("@deprecated"));
+    let is_deprecated = raw_doc.as_ref().is_some_and(|d| d.contains("@deprecated"));
     let is_async = signature.contains("async");
     let is_test = is_test_name(&name);
-    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+    let body_lines = Some(
+        node.end_position()
+            .row
+            .saturating_sub(node.start_position().row),
+    );
 
     let mut decl = Declaration::new(DeclKind::Method, name, signature, Visibility::Public, line);
     decl.doc_comment = doc_comment;
@@ -325,7 +334,11 @@ fn extract_class_field(node: Node<'_>, source: &str) -> Option<Declaration> {
         .collect::<Vec<_>>()
         .join(" ");
 
-    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+    let body_lines = Some(
+        node.end_position()
+            .row
+            .saturating_sub(node.start_position().row),
+    );
 
     let mut decl = Declaration::new(DeclKind::Field, name, signature, Visibility::Public, line);
     decl.body_lines = body_lines;
@@ -338,12 +351,11 @@ fn extract_lexical_declaration(node: Node<'_>, source: &str) -> Vec<Declaration>
     // Determine if this is const, let, or var
     let mut is_const = false;
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            let text = node_text(child, source);
-            if text == "const" {
-                is_const = true;
-                break;
-            }
+        if let Some(child) = node.child(i)
+            && node_text(child, source) == "const"
+        {
+            is_const = true;
+            break;
         }
     }
 
@@ -356,10 +368,10 @@ fn extract_lexical_declaration(node: Node<'_>, source: &str) -> Vec<Declaration>
         let Some(child) = node.child(i) else {
             continue;
         };
-        if child.kind() == "variable_declarator" {
-            if let Some(decl) = extract_variable_declarator(child, node, source) {
-                declarations.push(decl);
-            }
+        if child.kind() == "variable_declarator"
+            && let Some(decl) = extract_variable_declarator(child, node, source)
+        {
+            declarations.push(decl);
         }
     }
 
@@ -373,10 +385,10 @@ fn extract_variable_declaration(node: Node<'_>, source: &str) -> Vec<Declaration
         let Some(child) = node.child(i) else {
             continue;
         };
-        if child.kind() == "variable_declarator" {
-            if let Some(decl) = extract_variable_declarator(child, node, source) {
-                declarations.push(decl);
-            }
+        if child.kind() == "variable_declarator"
+            && let Some(decl) = extract_variable_declarator(child, node, source)
+        {
+            declarations.push(decl);
         }
     }
 
@@ -395,10 +407,21 @@ fn extract_variable_declarator(
     let signature = extract_signature(parent, source);
 
     let raw_doc = get_raw_doc_comment(parent, source);
-    let is_deprecated = raw_doc.as_ref().map_or(false, |d| d.contains("@deprecated"));
-    let body_lines = Some(parent.end_position().row.saturating_sub(parent.start_position().row));
+    let is_deprecated = raw_doc.as_ref().is_some_and(|d| d.contains("@deprecated"));
+    let body_lines = Some(
+        parent
+            .end_position()
+            .row
+            .saturating_sub(parent.start_position().row),
+    );
 
-    let mut decl = Declaration::new(DeclKind::Constant, name, signature, Visibility::Private, line);
+    let mut decl = Declaration::new(
+        DeclKind::Constant,
+        name,
+        signature,
+        Visibility::Private,
+        line,
+    );
     decl.doc_comment = doc_comment;
     decl.is_deprecated = is_deprecated;
     decl.body_lines = body_lines;

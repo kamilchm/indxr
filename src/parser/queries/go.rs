@@ -127,8 +127,14 @@ fn extract_function(node: Node<'_>, source: &str) -> Option<Declaration> {
     let line = node.start_position().row + 1;
 
     let is_test = is_go_test_name(&name);
-    let is_deprecated = doc_comment.as_ref().map_or(false, |d| d.contains("Deprecated:"));
-    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+    let is_deprecated = doc_comment
+        .as_ref()
+        .is_some_and(|d| d.contains("Deprecated:"));
+    let body_lines = Some(
+        node.end_position()
+            .row
+            .saturating_sub(node.start_position().row),
+    );
 
     let mut decl = Declaration::new(DeclKind::Function, name, signature, visibility, line);
     decl.doc_comment = doc_comment;
@@ -171,8 +177,14 @@ fn extract_method(node: Node<'_>, source: &str) -> Option<Declaration> {
     let line = node.start_position().row + 1;
 
     let is_test = is_go_test_name(&method_name);
-    let is_deprecated = doc_comment.as_ref().map_or(false, |d| d.contains("Deprecated:"));
-    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+    let is_deprecated = doc_comment
+        .as_ref()
+        .is_some_and(|d| d.contains("Deprecated:"));
+    let body_lines = Some(
+        node.end_position()
+            .row
+            .saturating_sub(node.start_position().row),
+    );
 
     let mut decl = Declaration::new(DeclKind::Method, name, signature, visibility, line);
     decl.doc_comment = doc_comment;
@@ -190,10 +202,10 @@ fn extract_type_declaration(node: Node<'_>, source: &str) -> Vec<Declaration> {
         let Some(child) = node.child(i) else {
             continue;
         };
-        if child.kind() == "type_spec" {
-            if let Some(decl) = extract_type_spec(child, source, &doc_comment) {
-                declarations.push(decl);
-            }
+        if child.kind() == "type_spec"
+            && let Some(decl) = extract_type_spec(child, source, &doc_comment)
+        {
+            declarations.push(decl);
         }
     }
 
@@ -215,8 +227,14 @@ fn extract_type_spec(
 
     let type_node = node.child_by_field_name("type")?;
 
-    let is_deprecated = doc_comment.as_ref().map_or(false, |d| d.contains("Deprecated:"));
-    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+    let is_deprecated = doc_comment
+        .as_ref()
+        .is_some_and(|d| d.contains("Deprecated:"));
+    let body_lines = Some(
+        node.end_position()
+            .row
+            .saturating_sub(node.start_position().row),
+    );
 
     match type_node.kind() {
         "struct_type" => {
@@ -271,10 +289,10 @@ fn extract_struct_fields(node: Node<'_>, source: &str) -> Vec<Declaration> {
                 let Some(field) = child.child(j) else {
                     continue;
                 };
-                if field.kind() == "field_declaration" {
-                    if let Some(decl) = extract_struct_field(field, source) {
-                        fields.push(decl);
-                    }
+                if field.kind() == "field_declaration"
+                    && let Some(decl) = extract_struct_field(field, source)
+                {
+                    fields.push(decl);
                 }
             }
         }
@@ -296,7 +314,11 @@ fn extract_struct_field(node: Node<'_>, source: &str) -> Option<Declaration> {
 
     let signature = format!("{} {}", name, type_text);
 
-    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+    let body_lines = Some(
+        node.end_position()
+            .row
+            .saturating_sub(node.start_position().row),
+    );
 
     let mut decl = Declaration::new(DeclKind::Field, name, signature, visibility, line);
     decl.body_lines = body_lines;
@@ -310,10 +332,10 @@ fn extract_interface_methods(node: Node<'_>, source: &str) -> Vec<Declaration> {
         let Some(child) = node.child(i) else {
             continue;
         };
-        if child.kind() == "method_spec" {
-            if let Some(decl) = extract_method_spec(child, source) {
-                methods.push(decl);
-            }
+        if child.kind() == "method_spec"
+            && let Some(decl) = extract_method_spec(child, source)
+        {
+            methods.push(decl);
         }
     }
 
@@ -326,12 +348,15 @@ fn extract_method_spec(node: Node<'_>, source: &str) -> Option<Declaration> {
     let visibility = extract_visibility(&name);
     let line = node.start_position().row + 1;
     let signature = node_text(node, source)
-        .trim()
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
 
-    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+    let body_lines = Some(
+        node.end_position()
+            .row
+            .saturating_sub(node.start_position().row),
+    );
 
     let mut decl = Declaration::new(DeclKind::Method, name, signature, visibility, line);
     decl.body_lines = body_lines;
@@ -346,10 +371,10 @@ fn extract_const_declaration(node: Node<'_>, source: &str) -> Vec<Declaration> {
         let Some(child) = node.child(i) else {
             continue;
         };
-        if child.kind() == "const_spec" {
-            if let Some(decl) = extract_const_spec(child, source, &doc_comment) {
-                declarations.push(decl);
-            }
+        if child.kind() == "const_spec"
+            && let Some(decl) = extract_const_spec(child, source, &doc_comment)
+        {
+            declarations.push(decl);
         }
     }
 
@@ -367,13 +392,18 @@ fn extract_const_spec(
     let line = node.start_position().row + 1;
     let doc_comment = extract_doc_comment(node, source).or_else(|| parent_doc.clone());
     let signature = node_text(node, source)
-        .trim()
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
 
-    let is_deprecated = doc_comment.as_ref().map_or(false, |d| d.contains("Deprecated:"));
-    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+    let is_deprecated = doc_comment
+        .as_ref()
+        .is_some_and(|d| d.contains("Deprecated:"));
+    let body_lines = Some(
+        node.end_position()
+            .row
+            .saturating_sub(node.start_position().row),
+    );
 
     let mut decl = Declaration::new(DeclKind::Constant, name, signature, visibility, line);
     decl.doc_comment = doc_comment;
@@ -390,10 +420,10 @@ fn extract_var_declaration(node: Node<'_>, source: &str) -> Vec<Declaration> {
         let Some(child) = node.child(i) else {
             continue;
         };
-        if child.kind() == "var_spec" {
-            if let Some(decl) = extract_var_spec(child, source, &doc_comment) {
-                declarations.push(decl);
-            }
+        if child.kind() == "var_spec"
+            && let Some(decl) = extract_var_spec(child, source, &doc_comment)
+        {
+            declarations.push(decl);
         }
     }
 
@@ -411,13 +441,18 @@ fn extract_var_spec(
     let line = node.start_position().row + 1;
     let doc_comment = extract_doc_comment(node, source).or_else(|| parent_doc.clone());
     let signature = node_text(node, source)
-        .trim()
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
 
-    let is_deprecated = doc_comment.as_ref().map_or(false, |d| d.contains("Deprecated:"));
-    let body_lines = Some(node.end_position().row.saturating_sub(node.start_position().row));
+    let is_deprecated = doc_comment
+        .as_ref()
+        .is_some_and(|d| d.contains("Deprecated:"));
+    let body_lines = Some(
+        node.end_position()
+            .row
+            .saturating_sub(node.start_position().row),
+    );
 
     let mut decl = Declaration::new(DeclKind::Static, name, signature, visibility, line);
     decl.doc_comment = doc_comment;

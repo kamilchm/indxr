@@ -1,7 +1,7 @@
 use tree_sitter::Node;
 
 use crate::model::Import;
-use crate::model::declarations::{DeclKind, Declaration, Visibility, Relationship, RelKind};
+use crate::model::declarations::{DeclKind, Declaration, RelKind, Relationship, Visibility};
 
 use super::DeclExtractor;
 
@@ -81,14 +81,14 @@ fn node_text<'a>(node: Node<'_>, source: &'a str) -> &'a str {
 
 fn extract_visibility(node: Node<'_>, source: &str) -> Visibility {
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "visibility_modifier" {
-                let text = node_text(child, source);
-                if text.contains("crate") {
-                    return Visibility::PublicCrate;
-                }
-                return Visibility::Public;
+        if let Some(child) = node.child(i)
+            && child.kind() == "visibility_modifier"
+        {
+            let text = node_text(child, source);
+            if text.contains("crate") {
+                return Visibility::PublicCrate;
             }
+            return Visibility::Public;
         }
     }
     Visibility::Private
@@ -221,12 +221,11 @@ fn extract_struct(node: Node<'_>, source: &str) -> Option<Declaration> {
     let mut fields = Vec::new();
     if let Some(body) = node.child_by_field_name("body") {
         for i in 0..body.child_count() {
-            if let Some(child) = body.child(i) {
-                if child.kind() == "field_declaration" {
-                    if let Some(field) = extract_field(child, source) {
-                        fields.push(field);
-                    }
-                }
+            if let Some(child) = body.child(i)
+                && child.kind() == "field_declaration"
+                && let Some(field) = extract_field(child, source)
+            {
+                fields.push(field);
             }
         }
     }
@@ -270,12 +269,11 @@ fn extract_enum(node: Node<'_>, source: &str) -> Option<Declaration> {
     let mut variants = Vec::new();
     if let Some(body) = node.child_by_field_name("body") {
         for i in 0..body.child_count() {
-            if let Some(child) = body.child(i) {
-                if child.kind() == "enum_variant" {
-                    if let Some(variant) = extract_variant(child, source) {
-                        variants.push(variant);
-                    }
-                }
+            if let Some(child) = body.child(i)
+                && child.kind() == "enum_variant"
+                && let Some(variant) = extract_variant(child, source)
+            {
+                variants.push(variant);
             }
         }
     }
@@ -353,12 +351,11 @@ fn extract_impl(node: Node<'_>, source: &str) -> Option<Declaration> {
     let mut methods = Vec::new();
     if let Some(body) = node.child_by_field_name("body") {
         for i in 0..body.child_count() {
-            if let Some(child) = body.child(i) {
-                if child.kind() == "function_item" {
-                    if let Some(method) = extract_function(child, source, DeclKind::Method) {
-                        methods.push(method);
-                    }
-                }
+            if let Some(child) = body.child(i)
+                && child.kind() == "function_item"
+                && let Some(method) = extract_function(child, source, DeclKind::Method)
+            {
+                methods.push(method);
             }
         }
     }
@@ -379,11 +376,7 @@ fn extract_impl(node: Node<'_>, source: &str) -> Option<Declaration> {
     Some(decl)
 }
 
-fn extract_const_or_static(
-    node: Node<'_>,
-    source: &str,
-    kind: DeclKind,
-) -> Option<Declaration> {
+fn extract_const_or_static(node: Node<'_>, source: &str, kind: DeclKind) -> Option<Declaration> {
     let name_node = node.child_by_field_name("name")?;
     let name = node_text(name_node, source).to_string();
     let visibility = extract_visibility(node, source);

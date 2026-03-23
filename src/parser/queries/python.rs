@@ -1,7 +1,7 @@
 use tree_sitter::Node;
 
 use crate::model::Import;
-use crate::model::declarations::{DeclKind, Declaration, Visibility, Relationship, RelKind};
+use crate::model::declarations::{DeclKind, Declaration, RelKind, Relationship, Visibility};
 
 use super::DeclExtractor;
 
@@ -244,23 +244,22 @@ fn extract_class(node: Node<'_>, source: &str) -> Option<Declaration> {
                 "decorated_definition" => {
                     // A decorated method inside a class
                     let inner = find_inner_definition(child);
-                    if let Some(inner_node) = inner {
-                        if inner_node.kind() == "function_definition" {
-                            let decorators = extract_decorators(child, source);
-                            if let Some(mut method) =
-                                extract_function(inner_node, source, DeclKind::Method)
-                            {
-                                if !decorators.is_empty() {
-                                    let prefix = decorators.join(" ");
-                                    method.signature =
-                                        format!("{} {}", prefix, method.signature);
-                                }
-                                // Check for @deprecated on decorated methods
-                                if has_deprecated_decorator(&decorators) {
-                                    method.is_deprecated = true;
-                                }
-                                methods.push(method);
+                    if let Some(inner_node) = inner
+                        && inner_node.kind() == "function_definition"
+                    {
+                        let decorators = extract_decorators(child, source);
+                        if let Some(mut method) =
+                            extract_function(inner_node, source, DeclKind::Method)
+                        {
+                            if !decorators.is_empty() {
+                                let prefix = decorators.join(" ");
+                                method.signature = format!("{} {}", prefix, method.signature);
                             }
+                            // Check for @deprecated on decorated methods
+                            if has_deprecated_decorator(&decorators) {
+                                method.is_deprecated = true;
+                            }
+                            methods.push(method);
                         }
                     }
                 }
@@ -380,7 +379,6 @@ fn extract_assignment(node: Node<'_>, source: &str) -> Option<Declaration> {
             let visibility = extract_visibility(&name);
             let line = node.start_position().row + 1;
             let signature = node_text(node, source)
-                .trim()
                 .split_whitespace()
                 .collect::<Vec<_>>()
                 .join(" ");

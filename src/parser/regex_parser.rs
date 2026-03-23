@@ -81,7 +81,11 @@ fn parse_shell(content: &str) -> (Vec<Import>, Vec<Declaration>) {
         // Source / dot-import
         if let Some(caps) = re_source.captures(trimmed) {
             imports.push(Import {
-                text: caps[1].trim().trim_matches('"').trim_matches('\'').to_string(),
+                text: caps[1]
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_string(),
             });
             continue;
         }
@@ -118,9 +122,27 @@ fn parse_shell(content: &str) -> (Vec<Import>, Vec<Declaration>) {
             // Skip common keywords that look like function calls
             if matches!(
                 name.as_str(),
-                "if" | "for" | "while" | "until" | "case" | "do" | "then" | "else" | "elif"
-                    | "fi" | "done" | "esac" | "export" | "alias" | "source" | "echo"
-                    | "return" | "exit" | "set" | "unset" | "local" | "readonly"
+                "if" | "for"
+                    | "while"
+                    | "until"
+                    | "case"
+                    | "do"
+                    | "then"
+                    | "else"
+                    | "elif"
+                    | "fi"
+                    | "done"
+                    | "esac"
+                    | "export"
+                    | "alias"
+                    | "source"
+                    | "echo"
+                    | "return"
+                    | "exit"
+                    | "set"
+                    | "unset"
+                    | "local"
+                    | "readonly"
             ) {
                 continue;
             }
@@ -237,9 +259,7 @@ fn parse_toml(path: &Path, content: &str) -> (Vec<Import>, Vec<Declaration>) {
             let key = caps[1].to_string();
 
             if is_cargo && in_dependencies {
-                imports.push(Import {
-                    text: key.clone(),
-                });
+                imports.push(Import { text: key.clone() });
             }
 
             let child = Declaration::new(
@@ -308,24 +328,25 @@ fn parse_yaml(path: &Path, content: &str) -> (Vec<Import>, Vec<Declaration>) {
         }
 
         // Indented child key (services children in docker-compose, or general children)
-        if is_docker_compose && in_services {
-            if let Some(caps) = re_child_key.captures(line) {
-                let indent: &str = &caps[1];
-                let name = caps[2].to_string();
+        if is_docker_compose
+            && in_services
+            && let Some(caps) = re_child_key.captures(line)
+        {
+            let indent: &str = &caps[1];
+            let name = caps[2].to_string();
 
-                // 2-space indent = direct child of services
-                if indent.len() <= 4 {
-                    if let Some(parent_idx) = current_top {
-                        let child = Declaration::new(
-                            DeclKind::ConfigKey,
-                            name.clone(),
-                            format!("service: {}", name),
-                            Visibility::Private,
-                            line_num + 1,
-                        );
-                        declarations[parent_idx].children.push(child);
-                    }
-                }
+            // 2-space indent = direct child of services
+            if indent.len() <= 4
+                && let Some(parent_idx) = current_top
+            {
+                let child = Declaration::new(
+                    DeclKind::ConfigKey,
+                    name.clone(),
+                    format!("service: {}", name),
+                    Visibility::Private,
+                    line_num + 1,
+                );
+                declarations[parent_idx].children.push(child);
             }
         }
     }
@@ -386,9 +407,7 @@ fn parse_json(path: &Path, content: &str) -> (Vec<Import>, Vec<Declaration>) {
             } else if brace_depth == 2 && bracket_depth == 0 {
                 // Depth-2 key: child of current top-level
                 if is_package_json && in_deps {
-                    imports.push(Import {
-                        text: key.clone(),
-                    });
+                    imports.push(Import { text: key.clone() });
                 }
 
                 let child = Declaration::new(
@@ -449,19 +468,19 @@ fn parse_sql(content: &str) -> (Vec<Import>, Vec<Declaration>) {
     let mut declarations = Vec::new();
 
     let re_create_table =
-        Regex::new(r#"(?i)^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?(\w+)[`"]?"#)
-            .unwrap();
-    let re_create_view =
-        Regex::new(r#"(?i)^CREATE\s+(?:OR\s+REPLACE\s+)?(?:MATERIALIZED\s+)?VIEW\s+[`"]?(\w+)[`"]?"#)
-            .unwrap();
-    let re_create_index =
-        Regex::new(r#"(?i)^CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?(\w+)[`"]?"#)
-            .unwrap();
+        Regex::new(r#"(?i)^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?(\w+)[`"]?"#).unwrap();
+    let re_create_view = Regex::new(
+        r#"(?i)^CREATE\s+(?:OR\s+REPLACE\s+)?(?:MATERIALIZED\s+)?VIEW\s+[`"]?(\w+)[`"]?"#,
+    )
+    .unwrap();
+    let re_create_index = Regex::new(
+        r#"(?i)^CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?(\w+)[`"]?"#,
+    )
+    .unwrap();
     let re_create_func =
         Regex::new(r#"(?i)^CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+[`"]?(\w+)[`"]?"#)
             .unwrap();
-    let re_create_type =
-        Regex::new(r#"(?i)^CREATE\s+TYPE\s+[`"]?(\w+)[`"]?"#).unwrap();
+    let re_create_type = Regex::new(r#"(?i)^CREATE\s+TYPE\s+[`"]?(\w+)[`"]?"#).unwrap();
     let re_column =
         Regex::new(r"(?i)^\s+(\w+)\s+(SERIAL|BIGSERIAL|SMALLSERIAL|INTEGER|INT|BIGINT|SMALLINT|TEXT|VARCHAR|CHAR|BOOLEAN|BOOL|FLOAT|DOUBLE|REAL|DECIMAL|NUMERIC|DATE|TIME|TIMESTAMP|TIMESTAMPTZ|UUID|JSONB?|BYTEA|BLOB|CLOB|XML|ARRAY)")
             .unwrap();
@@ -1081,8 +1100,19 @@ fn parse_graphql(content: &str) -> (Vec<Import>, Vec<Declaration>) {
             // Skip GraphQL keywords
             if matches!(
                 field_name.as_str(),
-                "query" | "mutation" | "subscription" | "type" | "input" | "interface" | "enum"
-                    | "schema" | "extend" | "directive" | "scalar" | "union" | "fragment"
+                "query"
+                    | "mutation"
+                    | "subscription"
+                    | "type"
+                    | "input"
+                    | "interface"
+                    | "enum"
+                    | "schema"
+                    | "extend"
+                    | "directive"
+                    | "scalar"
+                    | "union"
+                    | "fragment"
             ) {
                 // count braces and continue
                 for ch in trimmed.chars() {
@@ -1124,7 +1154,11 @@ fn parse_graphql(content: &str) -> (Vec<Import>, Vec<Declaration>) {
                     && !variant.starts_with('{')
                     && !variant.starts_with('}')
                     && !variant.starts_with('#')
-                    && variant.chars().next().map(|c| c.is_alphabetic()).unwrap_or(false)
+                    && variant
+                        .chars()
+                        .next()
+                        .map(|c| c.is_alphabetic())
+                        .unwrap_or(false)
                 {
                     let child = Declaration::new(
                         DeclKind::Variant,
@@ -1169,7 +1203,8 @@ fn parse_ruby(content: &str) -> (Vec<Import>, Vec<Declaration>) {
     let mut imports = Vec::new();
     let mut declarations: Vec<Declaration> = Vec::new();
 
-    let re_require = Regex::new(r#"^(?:require|require_relative|load)\s+['"]([^'"]+)['"]"#).unwrap();
+    let re_require =
+        Regex::new(r#"^(?:require|require_relative|load)\s+['"]([^'"]+)['"]"#).unwrap();
     let re_gem = Regex::new(r#"^\s*gem\s+['"]([^'"]+)['"]"#).unwrap();
     let re_source = Regex::new(r#"^\s*source\s+['"]([^'"]+)['"]"#).unwrap();
     let re_class = Regex::new(r"^(\s*)class\s+([A-Z]\w*)(?:\s*<\s*(\S+))?").unwrap();
@@ -1220,7 +1255,11 @@ fn parse_ruby(content: &str) -> (Vec<Import>, Vec<Declaration>) {
         let indent = line.len() - line.trim_start().len();
 
         // Pop containers that are at the same or deeper indent
-        while container_stack.last().map(|(i, _)| *i >= indent).unwrap_or(false) {
+        while container_stack
+            .last()
+            .map(|(i, _)| *i >= indent)
+            .unwrap_or(false)
+        {
             container_stack.pop();
         }
 
@@ -1232,13 +1271,8 @@ fn parse_ruby(content: &str) -> (Vec<Import>, Vec<Declaration>) {
             } else {
                 format!("class {}", name)
             };
-            let decl = Declaration::new(
-                DeclKind::Class,
-                name,
-                sig,
-                Visibility::Public,
-                line_num + 1,
-            );
+            let decl =
+                Declaration::new(DeclKind::Class, name, sig, Visibility::Public, line_num + 1);
             let idx = if let Some((_, parent_idx)) = container_stack.last() {
                 declarations[*parent_idx].children.push(decl);
                 // Return the index within parent's children (we won't nest deeper from children)
@@ -1393,7 +1427,11 @@ fn parse_kotlin(content: &str) -> (Vec<Import>, Vec<Declaration>) {
     for (line_num, line) in content.lines().enumerate() {
         let trimmed = line.trim();
 
-        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with("*") {
+        if trimmed.is_empty()
+            || trimmed.starts_with("//")
+            || trimmed.starts_with("/*")
+            || trimmed.starts_with("*")
+        {
             // Count braces even in blank/comment lines for tracking
             for ch in trimmed.chars() {
                 match ch {
@@ -1403,7 +1441,11 @@ fn parse_kotlin(content: &str) -> (Vec<Import>, Vec<Declaration>) {
                 }
             }
             // Pop containers
-            while container_stack.last().map(|(d, _)| brace_depth <= *d).unwrap_or(false) {
+            while container_stack
+                .last()
+                .map(|(d, _)| brace_depth <= *d)
+                .unwrap_or(false)
+            {
                 container_stack.pop();
             }
             continue;
@@ -1542,26 +1584,30 @@ fn parse_kotlin(content: &str) -> (Vec<Import>, Vec<Declaration>) {
         }
 
         // val / var (only at top-level or class-level, skip local variables)
-        if brace_depth <= 1 {
-            if let Some(caps) = re_val.captures(line) {
-                let name = caps[1].to_string();
-                let type_ann = caps.get(2).map(|m| m.as_str()).unwrap_or("");
-                let keyword = if trimmed.contains("const ") || trimmed.starts_with("val ") || trimmed.contains(" val ") {
-                    "val"
-                } else {
-                    "var"
-                };
-                let sig = if type_ann.is_empty() {
-                    format!("{} {}", keyword, name)
-                } else {
-                    format!("{} {}: {}", keyword, name, type_ann)
-                };
-                let decl = Declaration::new(DeclKind::Field, name, sig, Visibility::Public, line_num + 1);
-                if let Some((_, parent_idx)) = container_stack.last() {
-                    declarations[*parent_idx].children.push(decl);
-                } else {
-                    declarations.push(decl);
-                }
+        if brace_depth <= 1
+            && let Some(caps) = re_val.captures(line)
+        {
+            let name = caps[1].to_string();
+            let type_ann = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+            let keyword = if trimmed.contains("const ")
+                || trimmed.starts_with("val ")
+                || trimmed.contains(" val ")
+            {
+                "val"
+            } else {
+                "var"
+            };
+            let sig = if type_ann.is_empty() {
+                format!("{} {}", keyword, name)
+            } else {
+                format!("{} {}: {}", keyword, name, type_ann)
+            };
+            let decl =
+                Declaration::new(DeclKind::Field, name, sig, Visibility::Public, line_num + 1);
+            if let Some((_, parent_idx)) = container_stack.last() {
+                declarations[*parent_idx].children.push(decl);
+            } else {
+                declarations.push(decl);
             }
         }
 
@@ -1585,22 +1631,18 @@ fn parse_swift(content: &str) -> (Vec<Import>, Vec<Declaration>) {
         r"^(?:\s*)(?:(?:public|private|internal|fileprivate|open|final)\s+)*class\s+(\w+)",
     )
     .unwrap();
-    let re_struct = Regex::new(
-        r"^(?:\s*)(?:(?:public|private|internal|fileprivate)\s+)*struct\s+(\w+)",
-    )
-    .unwrap();
-    let re_protocol = Regex::new(
-        r"^(?:\s*)(?:(?:public|private|internal|fileprivate)\s+)*protocol\s+(\w+)",
-    )
-    .unwrap();
-    let re_enum = Regex::new(
-        r"^(?:\s*)(?:(?:public|private|internal|fileprivate|indirect)\s+)*enum\s+(\w+)",
-    )
-    .unwrap();
-    let re_extension = Regex::new(
-        r"^(?:\s*)(?:(?:public|private|internal|fileprivate)\s+)*extension\s+(\w+)",
-    )
-    .unwrap();
+    let re_struct =
+        Regex::new(r"^(?:\s*)(?:(?:public|private|internal|fileprivate)\s+)*struct\s+(\w+)")
+            .unwrap();
+    let re_protocol =
+        Regex::new(r"^(?:\s*)(?:(?:public|private|internal|fileprivate)\s+)*protocol\s+(\w+)")
+            .unwrap();
+    let re_enum =
+        Regex::new(r"^(?:\s*)(?:(?:public|private|internal|fileprivate|indirect)\s+)*enum\s+(\w+)")
+            .unwrap();
+    let re_extension =
+        Regex::new(r"^(?:\s*)(?:(?:public|private|internal|fileprivate)\s+)*extension\s+(\w+)")
+            .unwrap();
     let re_func = Regex::new(
         r"^(?:\s*)(?:(?:public|private|internal|fileprivate|open|override|static|class|mutating|@\w+)\s+)*func\s+(\w+)\s*(?:<[^>]+>)?\s*\(([^)]*)\)",
     )
@@ -1620,7 +1662,11 @@ fn parse_swift(content: &str) -> (Vec<Import>, Vec<Declaration>) {
     for (line_num, line) in content.lines().enumerate() {
         let trimmed = line.trim();
 
-        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with("*") {
+        if trimmed.is_empty()
+            || trimmed.starts_with("//")
+            || trimmed.starts_with("/*")
+            || trimmed.starts_with("*")
+        {
             count_braces(trimmed, &mut brace_depth);
             pop_containers(&mut container_stack, brace_depth);
             continue;
@@ -1777,28 +1823,36 @@ fn parse_swift(content: &str) -> (Vec<Import>, Vec<Declaration>) {
         }
 
         // top-level let/var (only outside function bodies)
-        if brace_depth <= 1 {
-            if let Some(caps) = re_let.captures(line) {
-                let name = caps[1].to_string();
-                // Skip common keywords that look like var names
-                if matches!(name.as_str(), "self" | "super" | "return" | "guard" | "if" | "else" | "switch" | "case") {
-                    count_braces(trimmed, &mut brace_depth);
-                    pop_containers(&mut container_stack, brace_depth);
-                    continue;
-                }
-                let type_ann = caps.get(2).map(|m| m.as_str()).unwrap_or("");
-                let keyword = if trimmed.contains("let ") { "let" } else { "var" };
-                let sig = if type_ann.is_empty() {
-                    format!("{} {}", keyword, name)
-                } else {
-                    format!("{} {}: {}", keyword, name, type_ann)
-                };
-                let decl = Declaration::new(DeclKind::Field, name, sig, Visibility::Public, line_num + 1);
-                if let Some((_, parent_idx)) = container_stack.last() {
-                    declarations[*parent_idx].children.push(decl);
-                } else {
-                    declarations.push(decl);
-                }
+        if brace_depth <= 1
+            && let Some(caps) = re_let.captures(line)
+        {
+            let name = caps[1].to_string();
+            // Skip common keywords that look like var names
+            if matches!(
+                name.as_str(),
+                "self" | "super" | "return" | "guard" | "if" | "else" | "switch" | "case"
+            ) {
+                count_braces(trimmed, &mut brace_depth);
+                pop_containers(&mut container_stack, brace_depth);
+                continue;
+            }
+            let type_ann = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+            let keyword = if trimmed.contains("let ") {
+                "let"
+            } else {
+                "var"
+            };
+            let sig = if type_ann.is_empty() {
+                format!("{} {}", keyword, name)
+            } else {
+                format!("{} {}: {}", keyword, name, type_ann)
+            };
+            let decl =
+                Declaration::new(DeclKind::Field, name, sig, Visibility::Public, line_num + 1);
+            if let Some((_, parent_idx)) = container_stack.last() {
+                declarations[*parent_idx].children.push(decl);
+            } else {
+                declarations.push(decl);
             }
         }
 
@@ -1831,10 +1885,8 @@ fn parse_csharp(content: &str) -> (Vec<Import>, Vec<Declaration>) {
         r"^(?:\s*)(?:(?:public|private|protected|internal|readonly|partial)\s+)*struct\s+(\w+)",
     )
     .unwrap();
-    let re_enum = Regex::new(
-        r"^(?:\s*)(?:(?:public|private|protected|internal)\s+)*enum\s+(\w+)",
-    )
-    .unwrap();
+    let re_enum =
+        Regex::new(r"^(?:\s*)(?:(?:public|private|protected|internal)\s+)*enum\s+(\w+)").unwrap();
     let re_method = Regex::new(
         r"^(?:\s*)(?:(?:public|private|protected|internal|static|virtual|override|abstract|async|new|sealed|extern)\s+)*(?:[\w<>\[\]?,\s]+)\s+(\w+)\s*(?:<[^>]+>)?\s*\(([^)]*)\)",
     )
@@ -1845,7 +1897,11 @@ fn parse_csharp(content: &str) -> (Vec<Import>, Vec<Declaration>) {
     for (line_num, line) in content.lines().enumerate() {
         let trimmed = line.trim();
 
-        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with("*") {
+        if trimmed.is_empty()
+            || trimmed.starts_with("//")
+            || trimmed.starts_with("/*")
+            || trimmed.starts_with("*")
+        {
             count_braces(trimmed, &mut brace_depth);
             pop_containers(&mut container_stack, brace_depth);
             continue;
@@ -1975,28 +2031,40 @@ fn parse_csharp(content: &str) -> (Vec<Import>, Vec<Declaration>) {
         }
 
         // method (only inside containers)
-        if !container_stack.is_empty() {
-            if let Some(caps) = re_method.captures(line) {
-                let name = caps[1].to_string();
-                // Skip keywords that look like method names
-                if !matches!(
-                    name.as_str(),
-                    "if" | "for" | "while" | "switch" | "catch" | "using" | "lock" | "return"
-                        | "new" | "throw" | "typeof" | "sizeof" | "nameof" | "class" | "struct"
-                ) {
-                    let params = caps[2].to_string();
-                    let sig = format!("{}({})", name, truncate_value(&params, 60));
-                    let vis = if trimmed.starts_with("private") {
-                        Visibility::Private
-                    } else if trimmed.starts_with("protected") {
-                        Visibility::PublicCrate
-                    } else {
-                        Visibility::Public
-                    };
-                    let decl = Declaration::new(DeclKind::Method, name, sig, vis, line_num + 1);
-                    if let Some((_, parent_idx)) = container_stack.last() {
-                        declarations[*parent_idx].children.push(decl);
-                    }
+        if !container_stack.is_empty()
+            && let Some(caps) = re_method.captures(line)
+        {
+            let name = caps[1].to_string();
+            // Skip keywords that look like method names
+            if !matches!(
+                name.as_str(),
+                "if" | "for"
+                    | "while"
+                    | "switch"
+                    | "catch"
+                    | "using"
+                    | "lock"
+                    | "return"
+                    | "new"
+                    | "throw"
+                    | "typeof"
+                    | "sizeof"
+                    | "nameof"
+                    | "class"
+                    | "struct"
+            ) {
+                let params = caps[2].to_string();
+                let sig = format!("{}({})", name, truncate_value(&params, 60));
+                let vis = if trimmed.starts_with("private") {
+                    Visibility::Private
+                } else if trimmed.starts_with("protected") {
+                    Visibility::PublicCrate
+                } else {
+                    Visibility::Public
+                };
+                let decl = Declaration::new(DeclKind::Method, name, sig, vis, line_num + 1);
+                if let Some((_, parent_idx)) = container_stack.last() {
+                    declarations[*parent_idx].children.push(decl);
                 }
             }
         }
@@ -2029,7 +2097,11 @@ fn parse_objc(content: &str) -> (Vec<Import>, Vec<Declaration>) {
     for (line_num, line) in content.lines().enumerate() {
         let trimmed = line.trim();
 
-        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with("*") {
+        if trimmed.is_empty()
+            || trimmed.starts_with("//")
+            || trimmed.starts_with("/*")
+            || trimmed.starts_with("*")
+        {
             continue;
         }
 
@@ -2055,13 +2127,8 @@ fn parse_objc(content: &str) -> (Vec<Import>, Vec<Declaration>) {
             } else {
                 format!("@interface {}", name)
             };
-            let decl = Declaration::new(
-                DeclKind::Class,
-                name,
-                sig,
-                Visibility::Public,
-                line_num + 1,
-            );
+            let decl =
+                Declaration::new(DeclKind::Class, name, sig, Visibility::Public, line_num + 1);
             let idx = declarations.len();
             declarations.push(decl);
             current_container = Some(idx);
@@ -2072,7 +2139,9 @@ fn parse_objc(content: &str) -> (Vec<Import>, Vec<Declaration>) {
         if let Some(caps) = re_implementation.captures(trimmed) {
             let name = caps[1].to_string();
             // Try to find existing @interface for this class
-            let existing = declarations.iter().position(|d| d.name == name && d.kind == DeclKind::Class);
+            let existing = declarations
+                .iter()
+                .position(|d| d.name == name && d.kind == DeclKind::Class);
             if let Some(idx) = existing {
                 current_container = Some(idx);
             } else {
@@ -2244,45 +2313,45 @@ fn parse_xml(content: &str) -> (Vec<Import>, Vec<Declaration>) {
         }
 
         // Process opening tags
-        if !trimmed.starts_with("</") {
-            if let Some(caps) = re_open_tag.captures(trimmed) {
-                let tag = caps[1].to_string();
+        if !trimmed.starts_with("</")
+            && let Some(caps) = re_open_tag.captures(trimmed)
+        {
+            let tag = caps[1].to_string();
 
-                // Check if this is a self-closing tag
-                let is_self_closing = trimmed.contains("/>");
+            // Check if this is a self-closing tag
+            let is_self_closing = trimmed.contains("/>");
 
-                // Check if the tag's > is on this line
-                let has_closing_bracket = trimmed.contains('>');
+            // Check if the tag's > is on this line
+            let has_closing_bracket = trimmed.contains('>');
 
-                if !is_self_closing && has_closing_bracket {
-                    // Normal single-line opening tag
-                    if depth <= 1 && !seen_elements.contains(&tag) {
-                        seen_elements.insert(tag.clone());
-                        declarations.push(Declaration::new(
-                            DeclKind::ConfigKey,
-                            tag.clone(),
-                            format!("<{}>", tag),
-                            Visibility::Public,
-                            line_num + 1,
-                        ));
-                    }
-                    depth += 1;
-                } else if is_self_closing {
-                    // Self-closing tag — extract but don't change depth
-                    if depth <= 1 && !seen_elements.contains(&tag) {
-                        seen_elements.insert(tag.clone());
-                        declarations.push(Declaration::new(
-                            DeclKind::ConfigKey,
-                            tag.clone(),
-                            format!("<{}>", tag),
-                            Visibility::Public,
-                            line_num + 1,
-                        ));
-                    }
-                } else {
-                    // Multiline opening tag — no > on this line
-                    pending_open = Some((tag, line_num));
+            if !is_self_closing && has_closing_bracket {
+                // Normal single-line opening tag
+                if depth <= 1 && !seen_elements.contains(&tag) {
+                    seen_elements.insert(tag.clone());
+                    declarations.push(Declaration::new(
+                        DeclKind::ConfigKey,
+                        tag.clone(),
+                        format!("<{}>", tag),
+                        Visibility::Public,
+                        line_num + 1,
+                    ));
                 }
+                depth += 1;
+            } else if is_self_closing {
+                // Self-closing tag — extract but don't change depth
+                if depth <= 1 && !seen_elements.contains(&tag) {
+                    seen_elements.insert(tag.clone());
+                    declarations.push(Declaration::new(
+                        DeclKind::ConfigKey,
+                        tag.clone(),
+                        format!("<{}>", tag),
+                        Visibility::Public,
+                        line_num + 1,
+                    ));
+                }
+            } else {
+                // Multiline opening tag — no > on this line
+                pending_open = Some((tag, line_num));
             }
         }
     }
@@ -2301,7 +2370,9 @@ fn parse_html(content: &str) -> (Vec<Import>, Vec<Declaration>) {
     let re_tag = Regex::new(r"<(head|body|header|nav|main|section|article|aside|footer|form|table|script|style|template|slot|dialog)[\s>]").unwrap();
     let re_id = Regex::new(r#"id\s*=\s*["']([^"']+)["']"#).unwrap();
     let re_title = Regex::new(r"<title[^>]*>([^<]+)</title>").unwrap();
-    let re_link_rel = Regex::new(r#"<link\s+rel\s*=\s*["']stylesheet["'][^>]*href\s*=\s*["']([^"']+)["']"#).unwrap();
+    let re_link_rel =
+        Regex::new(r#"<link\s+rel\s*=\s*["']stylesheet["'][^>]*href\s*=\s*["']([^"']+)["']"#)
+            .unwrap();
     let re_script_src = Regex::new(r#"<script[^>]*src\s*=\s*["']([^"']+)["']"#).unwrap();
 
     for (line_num, line) in content.lines().enumerate() {
@@ -2364,7 +2435,8 @@ fn parse_css(content: &str) -> (Vec<Import>, Vec<Declaration>) {
     let mut declarations = Vec::new();
 
     let re_import = Regex::new(r#"^@import\s+(?:url\()?['"]?([^'")]+)['"]?\)?\s*;"#).unwrap();
-    let re_at_rule = Regex::new(r"^@(media|keyframes|font-face|supports|layer|container)\s*(.*)$").unwrap();
+    let re_at_rule =
+        Regex::new(r"^@(media|keyframes|font-face|supports|layer|container)\s*(.*)$").unwrap();
     let re_selector = Regex::new(r"^([.#]?[A-Za-z_\-][\w\-.*#:>\s,\[\]=~|^$]+)\s*\{").unwrap();
     let re_css_var = Regex::new(r"^\s*--([A-Za-z][\w-]*)\s*:").unwrap();
 
@@ -2473,53 +2545,55 @@ fn parse_gradle(content: &str) -> (Vec<Import>, Vec<Declaration>) {
     for (line_num, line) in content.lines().enumerate() {
         let trimmed = line.trim();
 
-        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with("*") {
+        if trimmed.is_empty()
+            || trimmed.starts_with("//")
+            || trimmed.starts_with("/*")
+            || trimmed.starts_with("*")
+        {
             count_braces(trimmed, &mut brace_depth);
             continue;
         }
 
         // Top-level blocks
-        if brace_depth == 0 {
-            if let Some(caps) = re_top_block.captures(trimmed) {
-                let name = caps[1].to_string();
-                in_plugins = name == "plugins";
-                declarations.push(Declaration::new(
-                    DeclKind::ConfigKey,
-                    name.clone(),
-                    format!("{} {{ }}", name),
-                    Visibility::Public,
-                    line_num + 1,
-                ));
-                // Extract plugin IDs from the same line (single-line plugins { id("...") })
-                if in_plugins {
-                    for pcaps in re_plugin_id_inline.captures_iter(trimmed) {
-                        let id = pcaps[1].to_string();
-                        declarations.push(Declaration::new(
-                            DeclKind::ConfigKey,
-                            id.clone(),
-                            format!("plugin: {}", id),
-                            Visibility::Public,
-                            line_num + 1,
-                        ));
-                    }
+        if brace_depth == 0
+            && let Some(caps) = re_top_block.captures(trimmed)
+        {
+            let name = caps[1].to_string();
+            in_plugins = name == "plugins";
+            declarations.push(Declaration::new(
+                DeclKind::ConfigKey,
+                name.clone(),
+                format!("{} {{ }}", name),
+                Visibility::Public,
+                line_num + 1,
+            ));
+            // Extract plugin IDs from the same line (single-line plugins { id("...") })
+            if in_plugins {
+                for pcaps in re_plugin_id_inline.captures_iter(trimmed) {
+                    let id = pcaps[1].to_string();
+                    declarations.push(Declaration::new(
+                        DeclKind::ConfigKey,
+                        id.clone(),
+                        format!("plugin: {}", id),
+                        Visibility::Public,
+                        line_num + 1,
+                    ));
                 }
-                count_braces(trimmed, &mut brace_depth);
-                continue;
             }
+            count_braces(trimmed, &mut brace_depth);
+            continue;
         }
 
         // Plugin ids (multi-line plugins block)
-        if in_plugins {
-            if let Some(caps) = re_plugin_id.captures(trimmed) {
-                let id = caps[1].to_string();
-                declarations.push(Declaration::new(
-                    DeclKind::ConfigKey,
-                    id.clone(),
-                    format!("plugin: {}", id),
-                    Visibility::Public,
-                    line_num + 1,
-                ));
-            }
+        if in_plugins && let Some(caps) = re_plugin_id.captures(trimmed) {
+            let id = caps[1].to_string();
+            declarations.push(Declaration::new(
+                DeclKind::ConfigKey,
+                id.clone(),
+                format!("plugin: {}", id),
+                Visibility::Public,
+                line_num + 1,
+            ));
         }
 
         // apply plugin:
@@ -2551,19 +2625,19 @@ fn parse_gradle(content: &str) -> (Vec<Import>, Vec<Declaration>) {
         }
 
         // def / val / var
-        if brace_depth <= 1 {
-            if let Some(caps) = re_def.captures(trimmed) {
-                let name = caps[1].to_string();
-                declarations.push(Declaration::new(
-                    DeclKind::Constant,
-                    name.clone(),
-                    truncate_value(trimmed, 80),
-                    Visibility::Public,
-                    line_num + 1,
-                ));
-                count_braces(trimmed, &mut brace_depth);
-                continue;
-            }
+        if brace_depth <= 1
+            && let Some(caps) = re_def.captures(trimmed)
+        {
+            let name = caps[1].to_string();
+            declarations.push(Declaration::new(
+                DeclKind::Constant,
+                name.clone(),
+                truncate_value(trimmed, 80),
+                Visibility::Public,
+                line_num + 1,
+            ));
+            count_braces(trimmed, &mut brace_depth);
+            continue;
         }
 
         count_braces(trimmed, &mut brace_depth);
@@ -2684,7 +2758,12 @@ fn parse_cmake(content: &str) -> (Vec<Import>, Vec<Declaration>) {
         // set() - only for uppercase variables (conventions for cache/options)
         if let Some(caps) = re_set.captures(trimmed) {
             let name = caps[1].to_string();
-            if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+            if name
+                .chars()
+                .next()
+                .map(|c| c.is_uppercase())
+                .unwrap_or(false)
+            {
                 declarations.push(Declaration::new(
                     DeclKind::Constant,
                     name.clone(),
@@ -2792,7 +2871,11 @@ fn count_braces(line: &str, depth: &mut i32) {
 }
 
 fn pop_containers(stack: &mut Vec<(i32, usize)>, brace_depth: i32) {
-    while stack.last().map(|(d, _)| brace_depth <= *d).unwrap_or(false) {
+    while stack
+        .last()
+        .map(|(d, _)| brace_depth <= *d)
+        .unwrap_or(false)
+    {
         stack.pop();
     }
 }
@@ -2836,9 +2919,7 @@ export PATH="/usr/local/bin:$PATH"
 alias ll="ls -la"
 "#;
         let parser = make_parser(Language::Shell);
-        let result = parser
-            .parse_file(Path::new("test.sh"), content)
-            .unwrap();
+        let result = parser.parse_file(Path::new("test.sh"), content).unwrap();
         assert_eq!(result.imports.len(), 2);
         assert_eq!(result.imports[0].text, "./utils.sh");
         assert!(result.declarations.iter().any(|d| d.name == "greet"));
@@ -2862,18 +2943,13 @@ anyhow = "1"
 tokio = { version = "1", features = ["full"] }
 "#;
         let parser = make_parser(Language::Toml);
-        let result = parser
-            .parse_file(Path::new("Cargo.toml"), content)
-            .unwrap();
+        let result = parser.parse_file(Path::new("Cargo.toml"), content).unwrap();
         // Should have sections and imports for deps
         assert!(result.imports.iter().any(|i| i.text == "serde"));
         assert!(result.imports.iter().any(|i| i.text == "anyhow"));
         assert!(result.imports.iter().any(|i| i.text == "tokio"));
         assert!(result.declarations.iter().any(|d| d.name == "package"));
-        assert!(result
-            .declarations
-            .iter()
-            .any(|d| d.name == "dependencies"));
+        assert!(result.declarations.iter().any(|d| d.name == "dependencies"));
     }
 
     #[test]
@@ -2907,22 +2983,30 @@ CREATE TYPE status AS ENUM ('active', 'inactive');
         assert!(table.children.iter().any(|c| c.name == "id"));
         assert!(table.children.iter().any(|c| c.name == "name"));
         assert!(table.children.iter().any(|c| c.name == "email"));
-        assert!(result
-            .declarations
-            .iter()
-            .any(|d| d.name == "idx_users_email"));
-        assert!(result
-            .declarations
-            .iter()
-            .any(|d| d.name == "get_user" && d.kind == DeclKind::Function));
-        assert!(result
-            .declarations
-            .iter()
-            .any(|d| d.name == "active_users" && d.kind == DeclKind::TableDef));
-        assert!(result
-            .declarations
-            .iter()
-            .any(|d| d.name == "status" && d.kind == DeclKind::SchemaType));
+        assert!(
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name == "idx_users_email")
+        );
+        assert!(
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name == "get_user" && d.kind == DeclKind::Function)
+        );
+        assert!(
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name == "active_users" && d.kind == DeclKind::TableDef)
+        );
+        assert!(
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name == "status" && d.kind == DeclKind::SchemaType)
+        );
     }
 
     #[test]
@@ -2944,9 +3028,7 @@ Some text here.
 ## Methods
 "#;
         let parser = make_parser(Language::Markdown);
-        let result = parser
-            .parse_file(Path::new("README.md"), content)
-            .unwrap();
+        let result = parser.parse_file(Path::new("README.md"), content).unwrap();
         // Two H1 headings at top level
         let top_level: Vec<_> = result
             .declarations
@@ -2990,14 +3072,9 @@ service UserService {
 }
 "#;
         let parser = make_parser(Language::Protobuf);
-        let result = parser
-            .parse_file(Path::new("user.proto"), content)
-            .unwrap();
+        let result = parser.parse_file(Path::new("user.proto"), content).unwrap();
         assert!(result.imports.iter().any(|i| i.text.contains("myservice")));
-        assert!(result
-            .imports
-            .iter()
-            .any(|i| i.text.contains("timestamp")));
+        assert!(result.imports.iter().any(|i| i.text.contains("timestamp")));
         let msg = result
             .declarations
             .iter()
@@ -3065,26 +3142,36 @@ schema {
             .find(|d| d.name == "User" && d.kind == DeclKind::SchemaType)
             .unwrap();
         assert_eq!(user_type.children.len(), 4);
-        assert!(result
-            .declarations
-            .iter()
-            .any(|d| d.name == "CreateUserInput" && d.kind == DeclKind::SchemaType));
-        assert!(result
-            .declarations
-            .iter()
-            .any(|d| d.name == "Node" && d.kind == DeclKind::Interface));
-        assert!(result
-            .declarations
-            .iter()
-            .any(|d| d.name == "Role" && d.kind == DeclKind::Enum));
-        assert!(result
-            .declarations
-            .iter()
-            .any(|d| d.name == "GetUser" && d.kind == DeclKind::Function));
-        assert!(result
-            .declarations
-            .iter()
-            .any(|d| d.name == "schema" && d.kind == DeclKind::ConfigKey));
+        assert!(
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name == "CreateUserInput" && d.kind == DeclKind::SchemaType)
+        );
+        assert!(
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name == "Node" && d.kind == DeclKind::Interface)
+        );
+        assert!(
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name == "Role" && d.kind == DeclKind::Enum)
+        );
+        assert!(
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name == "GetUser" && d.kind == DeclKind::Function)
+        );
+        assert!(
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name == "schema" && d.kind == DeclKind::ConfigKey)
+        );
     }
 
     #[test]
@@ -3113,7 +3200,12 @@ end
         let parser = make_parser(Language::Ruby);
         let result = parser.parse_file(Path::new("app.rb"), content).unwrap();
         assert_eq!(result.imports.len(), 2);
-        assert!(result.declarations.iter().any(|d| d.name == "MyModule" && d.kind == DeclKind::Module));
+        assert!(
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name == "MyModule" && d.kind == DeclKind::Module)
+        );
     }
 
     #[test]
@@ -3137,12 +3229,30 @@ interface Drawable {
 "#;
         let parser = make_parser(Language::Kotlin);
         let result = parser.parse_file(Path::new("Test.kt"), content).unwrap();
-        assert!(result.imports.iter().any(|i| i.text.contains("com.example")));
-        let cls = result.declarations.iter().find(|d| d.name == "MyClass" && d.kind == DeclKind::Class);
+        assert!(
+            result
+                .imports
+                .iter()
+                .any(|i| i.text.contains("com.example"))
+        );
+        let cls = result
+            .declarations
+            .iter()
+            .find(|d| d.name == "MyClass" && d.kind == DeclKind::Class);
         assert!(cls.is_some());
         assert!(cls.unwrap().children.iter().any(|c| c.name == "getName"));
-        assert!(result.declarations.iter().any(|d| d.name == "Point" && d.kind == DeclKind::Class));
-        assert!(result.declarations.iter().any(|d| d.name == "Drawable" && d.kind == DeclKind::Interface));
+        assert!(
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name == "Point" && d.kind == DeclKind::Class)
+        );
+        assert!(
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name == "Drawable" && d.kind == DeclKind::Interface)
+        );
     }
 
     #[test]
@@ -3173,10 +3283,30 @@ enum Direction {
         let parser = make_parser(Language::Swift);
         let result = parser.parse_file(Path::new("App.swift"), content).unwrap();
         assert_eq!(result.imports.len(), 2);
-        assert!(result.declarations.iter().any(|d| d.name == "AppDelegate" && d.kind == DeclKind::Class));
-        assert!(result.declarations.iter().any(|d| d.name == "Drawable" && d.kind == DeclKind::Interface));
-        assert!(result.declarations.iter().any(|d| d.name == "Point" && d.kind == DeclKind::Struct));
-        assert!(result.declarations.iter().any(|d| d.name == "Direction" && d.kind == DeclKind::Enum));
+        assert!(
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name == "AppDelegate" && d.kind == DeclKind::Class)
+        );
+        assert!(
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name == "Drawable" && d.kind == DeclKind::Interface)
+        );
+        assert!(
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name == "Point" && d.kind == DeclKind::Struct)
+        );
+        assert!(
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name == "Direction" && d.kind == DeclKind::Enum)
+        );
     }
 
     #[test]
@@ -3204,7 +3334,12 @@ namespace MyApp {
         let parser = make_parser(Language::CSharp);
         let result = parser.parse_file(Path::new("App.cs"), content).unwrap();
         assert_eq!(result.imports.len(), 2);
-        assert!(result.declarations.iter().any(|d| d.name == "MyApp" && d.kind == DeclKind::Namespace));
+        assert!(
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name == "MyApp" && d.kind == DeclKind::Namespace)
+        );
     }
 
     #[test]
@@ -3229,7 +3364,11 @@ namespace MyApp {
         let parser = make_parser(Language::ObjectiveC);
         let result = parser.parse_file(Path::new("MyClass.m"), content).unwrap();
         assert_eq!(result.imports.len(), 2);
-        let cls = result.declarations.iter().find(|d| d.name == "MyClass" && d.kind == DeclKind::Class).unwrap();
+        let cls = result
+            .declarations
+            .iter()
+            .find(|d| d.name == "MyClass" && d.kind == DeclKind::Class)
+            .unwrap();
         assert!(cls.children.iter().any(|c| c.name == "doSomething"));
         assert!(cls.children.iter().any(|c| c.name == "create"));
     }
@@ -3245,10 +3384,20 @@ namespace MyApp {
 </manifest>
 "#;
         let parser = make_parser(Language::Xml);
-        let result = parser.parse_file(Path::new("AndroidManifest.xml"), content).unwrap();
-        assert!(!result.declarations.is_empty(), "XML should have declarations");
+        let result = parser
+            .parse_file(Path::new("AndroidManifest.xml"), content)
+            .unwrap();
+        assert!(
+            !result.declarations.is_empty(),
+            "XML should have declarations"
+        );
         assert!(result.declarations.iter().any(|d| d.name == "manifest"));
-        assert!(result.declarations.iter().any(|d| d.name == "uses-permission"));
+        assert!(
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name == "uses-permission")
+        );
         assert!(result.declarations.iter().any(|d| d.name == "application"));
         // activity is depth 2, should NOT be extracted
         assert!(!result.declarations.iter().any(|d| d.name == "activity"));
@@ -3274,14 +3423,40 @@ namespace MyApp {
 </manifest>
 "#;
         let parser = make_parser(Language::Xml);
-        let result = parser.parse_file(Path::new("AndroidManifest.xml"), content).unwrap();
-        assert!(result.declarations.iter().any(|d| d.name == "manifest"), "should find manifest");
-        assert!(result.declarations.iter().any(|d| d.name == "uses-permission"), "should find uses-permission");
-        assert!(result.declarations.iter().any(|d| d.name == "application"), "should find application (multiline)");
+        let result = parser
+            .parse_file(Path::new("AndroidManifest.xml"), content)
+            .unwrap();
+        assert!(
+            result.declarations.iter().any(|d| d.name == "manifest"),
+            "should find manifest"
+        );
+        assert!(
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name == "uses-permission"),
+            "should find uses-permission"
+        );
+        assert!(
+            result.declarations.iter().any(|d| d.name == "application"),
+            "should find application (multiline)"
+        );
         // Deeper elements should NOT be extracted
-        assert!(!result.declarations.iter().any(|d| d.name == "activity"), "activity is depth 2, skip");
-        assert!(!result.declarations.iter().any(|d| d.name == "intent-filter"), "intent-filter is depth 3, skip");
-        assert!(!result.declarations.iter().any(|d| d.name == "action"), "action is depth 4, skip");
+        assert!(
+            !result.declarations.iter().any(|d| d.name == "activity"),
+            "activity is depth 2, skip"
+        );
+        assert!(
+            !result
+                .declarations
+                .iter()
+                .any(|d| d.name == "intent-filter"),
+            "intent-filter is depth 3, skip"
+        );
+        assert!(
+            !result.declarations.iter().any(|d| d.name == "action"),
+            "action is depth 4, skip"
+        );
     }
 
     #[test]
@@ -3309,7 +3484,12 @@ namespace MyApp {
         let parser = make_parser(Language::Css);
         let result = parser.parse_file(Path::new("style.css"), content).unwrap();
         assert_eq!(result.imports.len(), 1);
-        assert!(result.declarations.iter().any(|d| d.name.contains("container")));
+        assert!(
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name.contains("container"))
+        );
     }
 
     #[test]
@@ -3320,11 +3500,25 @@ rootProject.name = 'fernweh_v2'
 include ':app'
 "#;
         let parser = make_parser(Language::Gradle);
-        let result = parser.parse_file(Path::new("settings.gradle"), content).unwrap();
-        assert!(result.declarations.iter().any(|d| d.name == "pluginManagement"), "should find pluginManagement block");
-        assert!(result.declarations.iter().any(|d| d.name == "plugins"), "should find plugins block");
+        let result = parser
+            .parse_file(Path::new("settings.gradle"), content)
+            .unwrap();
         assert!(
-            result.declarations.iter().any(|d| d.name == "com.facebook.react.settings"),
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name == "pluginManagement"),
+            "should find pluginManagement block"
+        );
+        assert!(
+            result.declarations.iter().any(|d| d.name == "plugins"),
+            "should find plugins block"
+        );
+        assert!(
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name == "com.facebook.react.settings"),
             "should find plugin ID from single-line plugins block"
         );
     }
@@ -3363,10 +3557,27 @@ function(my_helper)
 endfunction()
 "#;
         let parser = make_parser(Language::Cmake);
-        let result = parser.parse_file(Path::new("CMakeLists.txt"), content).unwrap();
-        assert!(result.declarations.iter().any(|d| d.name == "MyProject" && d.kind == DeclKind::Module));
-        assert!(result.declarations.iter().any(|d| d.name == "myapp" && d.kind == DeclKind::Function));
-        assert!(result.declarations.iter().any(|d| d.name == "my_helper" && d.kind == DeclKind::Function));
+        let result = parser
+            .parse_file(Path::new("CMakeLists.txt"), content)
+            .unwrap();
+        assert!(
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name == "MyProject" && d.kind == DeclKind::Module)
+        );
+        assert!(
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name == "myapp" && d.kind == DeclKind::Function)
+        );
+        assert!(
+            result
+                .declarations
+                .iter()
+                .any(|d| d.name == "my_helper" && d.kind == DeclKind::Function)
+        );
         assert!(result.imports.iter().any(|i| i.text == "Boost"));
     }
 
@@ -3380,7 +3591,9 @@ app.name=MyApp
 version=1.0
 "#;
         let parser = make_parser(Language::Properties);
-        let result = parser.parse_file(Path::new("config.properties"), content).unwrap();
+        let result = parser
+            .parse_file(Path::new("config.properties"), content)
+            .unwrap();
         assert!(result.declarations.iter().any(|d| d.name == "db"));
         let db = result.declarations.iter().find(|d| d.name == "db").unwrap();
         assert_eq!(db.children.len(), 3);

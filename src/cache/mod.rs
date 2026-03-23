@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::model::FileIndex;
 use self::fingerprint::{compute_hash, metadata_matches};
+use crate::model::FileIndex;
 
 const CACHE_VERSION: u32 = 2;
 const CACHE_FILENAME: &str = "cache.bin";
@@ -84,7 +84,14 @@ impl Cache {
     }
 
     /// Insert or update a cache entry for a file.
-    pub fn insert(&mut self, relative_path: &Path, size: u64, mtime: u64, content: &[u8], file_index: FileIndex) {
+    pub fn insert(
+        &mut self,
+        relative_path: &Path,
+        size: u64,
+        mtime: u64,
+        content: &[u8],
+        file_index: FileIndex,
+    ) {
         let content_hash = compute_hash(content);
         self.store.entries.insert(
             relative_path.to_path_buf(),
