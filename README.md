@@ -1,212 +1,69 @@
+<div align="center">
+
 # indxr
 
-Fast codebase indexer for AI agents. Built in Rust.
+**Fast codebase indexer for AI agents. Built in Rust.**
 
-AI agents waste tokens reading files just to understand what exists and where. `indxr` pre-computes a compact structural index of your entire codebase — every function signature, every struct field, every import — so agents can orient themselves instantly.
+[Getting Started](#getting-started) · [Documentation](docs/) · [Agent Integration](docs/agent-integration.md) · [MCP Server](docs/mcp-server.md)
 
-## Install
+</div>
+
+---
+
+AI agents waste tokens reading files just to understand what exists and where. **indxr** pre-computes a compact structural index of your entire codebase — every function signature, every struct field, every import — so agents can orient themselves instantly.
+
+```
+indxr → 243 files, 124K lines indexed in 73ms
+```
+
+### Why indxr?
+
+- **Save tokens** — agents get structure without reading source files
+- **16 languages** — tree-sitter AST parsing + regex extraction
+- **Instant** — parallel parsing with incremental caching (sub-10ms on warm runs)
+- **MCP server** — agents query the index on-demand via Model Context Protocol
+- **Git-aware** — structural diffs show added/removed/modified declarations
+- **Token budgets** — intelligently truncate output to fit context windows
+- **Zero config** — respects `.gitignore`, sensible defaults, just run it
+
+## Getting Started
+
+### Install
 
 ```bash
 cargo install --path .
 ```
 
-## Usage
+### Quick Start
 
 ```bash
-# Index current directory, output markdown to stdout
+# Index current directory → stdout
 indxr
 
-# Index a specific project, write to file
+# Index a project → file
 indxr ./my-project -o INDEX.md
 
-# JSON output with only Rust and Python
+# JSON output, only Rust and Python
 indxr -f json -l rust,python -o index.json
 
-# Summary only (directory tree, no declarations)
-indxr -d summary
-
-# Full detail with line numbers
-indxr -d full -o CODEBASE.md
-
-# Only public API surface
-indxr --public-only -o API.md
-
-# Find a specific symbol across the codebase
-indxr --symbol "Cache"
-
-# Only functions in a specific directory
-indxr --kind function --filter-path src/parser
-
-# Structural diff since a branch/tag/commit
-indxr --since main
-indxr --since HEAD~5
-
-# Fit output within a token budget
-indxr --max-tokens 4000
-
-# Start MCP server for AI agent integration
+# Start MCP server for AI agents
 indxr serve ./my-project
 ```
 
-## MCP Server
-
-`indxr serve` starts a [Model Context Protocol](https://modelcontextprotocol.io/) server over stdin/stdout. This lets AI agents query the index on-demand instead of loading the full output into context.
-
-```bash
-indxr serve ./my-project
-```
-
-### Available tools
-
-| Tool | Description |
-|------|-------------|
-| `lookup_symbol` | Find declarations matching a name (case-insensitive substring) |
-| `list_declarations` | List declarations in a file, optionally filtered by kind |
-| `search_signatures` | Search signatures by substring match |
-| `get_tree` | Get directory/file tree, optionally filtered by path |
-| `get_imports` | Get imports for a specific file |
-| `get_stats` | Get index statistics (files, lines, languages) |
-
-### MCP configuration
-
-Add to your MCP client config (e.g. Claude Desktop, Cursor):
-
-```json
-{
-  "mcpServers": {
-    "indxr": {
-      "command": "indxr",
-      "args": ["serve", "/path/to/project"]
-    }
-  }
-}
-```
-
-## What it extracts
-
-For each source file, `indxr` extracts:
-
-- **Functions** — name, parameters, return type, visibility
-- **Structs / Classes** — name, fields, methods
-- **Enums** — name, variants
-- **Traits / Interfaces** — name, method signatures
-- **Impl blocks** — associated methods
-- **Imports** — full import paths
-- **Constants / Type aliases / Modules**
-- **Doc comments** — Rust `///`, Python docstrings, JSDoc `/** */`, Javadoc, Go `//` comments
-- **Metadata** — `is_test`, `is_async`, `is_deprecated`, body line count
-- **Relationships** — `implements`, `extends` (trait impls, class inheritance)
-
-## Supported languages
-
-### Tree-sitter based (full AST parsing)
-
-| Language | Extracts |
-|----------|----------|
-| Rust | Functions, structs, enums, traits, impl blocks, modules, constants, type aliases |
-| Python | Functions, classes, decorators, docstrings, imports, module-level constants |
-| TypeScript | Functions, classes, interfaces, enums, type aliases, exports |
-| JavaScript | Functions, classes, exports, const declarations |
-| Go | Functions, methods (with receivers), structs, interfaces, constants |
-| Java | Classes, interfaces, enums, methods, constructors, fields, annotations |
-| C | Functions, structs, enums, typedefs, `#include`, `#define` |
-| C++ | Everything in C + classes, namespaces, templates, access specifiers |
-
-### Regex based (structural extraction)
-
-| Language | Extracts |
-|----------|----------|
-| Shell | Functions, exports, aliases, source imports |
-| TOML | Sections, keys; Cargo.toml dependency extraction |
-| YAML | Top-level keys; docker-compose service detection |
-| JSON | Top-level keys; package.json dependency extraction |
-| SQL | Tables (with columns), views, indexes, functions, types |
-| Markdown | Heading hierarchy |
-| Protobuf | Messages (with fields), services (with RPCs), enums |
-| GraphQL | Types, interfaces, enums, queries, mutations, subscriptions |
-
-## Filtering & scoped output
-
-Instead of dumping the entire index, query just what you need:
-
-```bash
-# Only files under a path
-indxr --filter-path src/model
-
-# Only a specific declaration kind
-indxr --kind function
-indxr --kind struct
-indxr --kind trait
-
-# Only public declarations
-indxr --public-only
-
-# Find a symbol by name (case-insensitive substring)
-indxr --symbol "parse"
-
-# Combine filters
-indxr --filter-path src/parser --kind function --public-only
-```
-
-## Git-aware structural diffing
-
-Show what changed structurally since a git ref — not line diffs, but added/removed/modified declarations:
-
-```bash
-indxr --since main
-indxr --since v1.0.0
-indxr --since HEAD~3
-indxr --since abc1234
-```
-
-Output shows structural changes with `+`/`-`/`~` markers:
-
-```
-# Structural Changes (since main)
-
-## Added Files
-- src/new_module.rs
-
-## Modified Files
-
-### src/parser/mod.rs
-+ `pub fn new_parser() -> Parser`
-- `fn old_helper()`
-~ `fn process(x: i32)` -> `fn process(x: i32, y: i32)`
-```
-
-Works with JSON output too: `indxr --since main -f json`
-
-## Token budget
-
-Agents have finite context. Specify a budget and `indxr` intelligently truncates:
-
-```bash
-indxr --max-tokens 4000
-```
-
-Truncation is progressive:
-1. Remove doc comments
-2. Remove private declarations
-3. Remove children (fields, methods)
-4. Drop files from the end
-
-The directory tree and public API surface are always preserved first.
-
-## Output formats
-
-### Markdown (default)
-
-Designed for AI agent context windows — compact, scannable, minimal tokens:
+### Example Output
 
 ```markdown
 # Codebase Index: my-project
 
-> Generated: 2026-03-23 | Files: 42 | Lines: 8,234
+> Generated: 2025-03-23 | Files: 42 | Lines: 8,234
 > Languages: Rust (28), Python (10), TypeScript (4)
 
 ## Directory Structure
-...
+src/
+  main.rs
+  parser/
+    mod.rs
+    rust.rs
 
 ## Public API Surface
 
@@ -223,33 +80,146 @@ Designed for AI agent context windows — compact, scannable, minimal tokens:
 **Declarations:**
 
 `pub fn main() -> Result<()>` [async]
-> Entry point
+> Entry point for the application
 > Line 10 (35 lines)
 > implements `Runner`
 ```
 
-Features:
-- **Public API Surface** section at the top for quick orientation
-- **Line numbers** at all detail levels (not just `full`)
-- **Metadata badges** — `[test]`, `[async]`, `[deprecated]`
-- **Relationship display** — implements/extends annotations
-- **Body line counts** — helps agents decide whether to read the full source
+## Features
 
-### JSON
+### Supported Languages
 
-Full structured output via `serde`. Machine-readable for tool integrations.
+<table>
+<tr>
+<td>
 
-### YAML
+**Tree-sitter (full AST)**
 
-Same structure as JSON, human-readable format.
+| Language | Key Extractions |
+|----------|----------------|
+| Rust | Functions, structs, enums, traits, impls |
+| Python | Functions, classes, decorators, docstrings |
+| TypeScript | Functions, classes, interfaces, type aliases |
+| JavaScript | Functions, classes, exports |
+| Go | Functions, methods, structs, interfaces |
+| Java | Classes, methods, annotations, fields |
+| C | Functions, structs, typedefs, macros |
+| C++ | Classes, namespaces, templates |
 
-## Detail levels
+</td>
+<td>
 
-| Level | What's included |
-|-------|-----------------|
-| `summary` | Directory tree + file list with languages |
-| `signatures` (default) | Above + all declarations with signatures, imports, doc comments, line numbers |
-| `full` | Above + metadata badges, relationships, body line counts |
+**Regex (structural extraction)**
+
+| Language | Key Extractions |
+|----------|----------------|
+| Shell | Functions, exports, aliases |
+| TOML | Sections, keys, Cargo deps |
+| YAML | Top-level keys, docker-compose |
+| JSON | Top-level keys, package.json deps |
+| SQL | Tables, views, indexes, functions |
+| Markdown | Heading hierarchy |
+| Protobuf | Messages, services, RPCs |
+| GraphQL | Types, queries, mutations |
+
+</td>
+</tr>
+</table>
+
+Full language reference: [docs/languages.md](docs/languages.md)
+
+### MCP Server
+
+Run `indxr serve` to expose a [Model Context Protocol](https://modelcontextprotocol.io/) server that AI agents can query on-demand:
+
+```bash
+indxr serve ./my-project
+```
+
+| Tool | What it does |
+|------|-------------|
+| `lookup_symbol` | Find declarations by name |
+| `list_declarations` | List declarations in a file |
+| `search_signatures` | Search signatures by substring |
+| `get_tree` | Get directory structure |
+| `get_imports` | Get imports for a file |
+| `get_stats` | Index statistics |
+
+Add to your AI tool's MCP config:
+
+```json
+{
+  "mcpServers": {
+    "indxr": {
+      "command": "indxr",
+      "args": ["serve", "/path/to/project"]
+    }
+  }
+}
+```
+
+Setup guides for Claude Code, Claude Desktop, Cursor, Windsurf, and more: [docs/mcp-server.md](docs/mcp-server.md)
+
+### Filtering & Scoped Output
+
+Query exactly what you need instead of the full index:
+
+```bash
+# Files under a path
+indxr --filter-path src/parser
+
+# Only functions, only public
+indxr --kind function --public-only
+
+# Find a symbol by name
+indxr --symbol "parse"
+
+# Combine filters
+indxr --filter-path src/model --kind struct --public-only
+```
+
+### Git-Aware Structural Diffing
+
+See what changed structurally since any git ref — not line diffs, but declaration-level changes:
+
+```bash
+indxr --since main
+indxr --since v1.0.0
+indxr --since HEAD~5
+```
+
+```
+## Modified Files
+
+### src/parser/mod.rs
++ `pub fn new_parser() -> Parser`
+- `fn old_helper()`
+~ `fn process(x: i32)` → `fn process(x: i32, y: i32)`
+```
+
+### Token Budget
+
+Fit output into finite context windows with intelligent progressive truncation:
+
+```bash
+indxr --max-tokens 4000
+```
+
+Truncation priority: doc comments → private declarations → children → least-important files. The directory tree and public API surface are always preserved first.
+
+### Output Formats & Detail Levels
+
+| Format | Best for |
+|--------|----------|
+| `markdown` (default) | AI context windows — compact, scannable |
+| `json` | Tool integrations, programmatic access |
+| `yaml` | Human-readable structured data |
+
+| Detail Level | Content |
+|-------------|---------|
+| `summary` | Directory tree + file list |
+| `signatures` (default) | + declarations, imports, doc comments, line numbers |
+| `full` | + metadata badges, relationships, body line counts |
 
 ## Performance
 
@@ -259,55 +229,30 @@ Same structure as JSON, human-readable format.
 | Medium (atuin) | 132 | 22K | 20ms | 6ms |
 | Large (cloud-hypervisor) | 243 | 124K | 73ms | ~10ms |
 
-Key design choices:
-- **tree-sitter** for accurate AST parsing (not regex) on 8 core languages
-- **regex** for lightweight structural extraction on config/schema languages
-- **rayon** for parallel file parsing
-- **xxhash** + mtime for incremental caching (`.indxr-cache/`)
-- **ignore** crate for .gitignore-aware directory walking (from ripgrep)
+## How It Works
 
-## CLI reference
-
-```
-indxr [OPTIONS] [PATH] [COMMAND]
-
-Commands:
-  serve  Start MCP server for AI agent integration
-
-Arguments:
-  [PATH]  Root directory to index [default: .]
-
-Options:
-  -o, --output <FILE>            Output file path (default: stdout)
-  -f, --format <FORMAT>          markdown|json|yaml [default: markdown]
-  -d, --detail <LEVEL>           summary|signatures|full [default: signatures]
-      --max-depth <N>            Maximum directory depth
-      --max-file-size <KB>       Skip files larger than N KB [default: 512]
-  -l, --languages <LANGS>        Filter by language (comma-separated)
-  -e, --exclude <PATTERNS>       Glob patterns to exclude
-      --no-gitignore             Don't respect .gitignore
-      --no-cache                 Disable incremental caching
-      --cache-dir <DIR>          Cache directory [default: .indxr-cache]
-  -q, --quiet                    Suppress progress output
-      --stats                    Print indexing statistics to stderr
-      --filter-path <SUBPATH>    Filter to a subdirectory
-      --symbol <SYMBOL>          Search for a symbol by name
-      --kind <KIND>              Filter by declaration kind
-      --public-only              Only show public declarations
-      --since <REF>              Structural diff since a git ref
-      --max-tokens <N>           Token budget for output
-```
-
-## How it works
-
-1. **Walk** the directory tree (`.gitignore`-aware via the `ignore` crate)
+1. **Walk** the directory tree (`.gitignore`-aware)
 2. **Detect** language by file extension
-3. **Check cache** — skip unchanged files (mtime + size, fallback to xxhash)
-4. **Parse** source files with tree-sitter or regex (parallel via rayon)
+3. **Check cache** — skip unchanged files (mtime + xxhash)
+4. **Parse** with tree-sitter or regex (parallel via rayon)
 5. **Extract** declarations, metadata, and relationships
 6. **Filter** by path, kind, visibility, symbol, or token budget
-7. **Format** output as Markdown, JSON, or YAML
-8. **Save cache** for next run
+7. **Format** as Markdown, JSON, or YAML
+8. **Cache** results for next run
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Agent Integration Guide](docs/agent-integration.md) | Using indxr with Claude, Codex, Cursor, Copilot, and more |
+| [MCP Server](docs/mcp-server.md) | MCP server setup, tools, and configuration |
+| [CLI Reference](docs/cli-reference.md) | Complete command-line reference |
+| [Supported Languages](docs/languages.md) | Full language support details and extraction reference |
+| [Output Formats](docs/output-formats.md) | Formats, detail levels, and example outputs |
+| [Filtering & Scoping](docs/filtering.md) | Path, kind, symbol, and visibility filters |
+| [Git Diffing](docs/git-diffing.md) | Structural diff since any git ref |
+| [Token Budget](docs/token-budget.md) | Context window optimization and truncation strategy |
+| [Caching](docs/caching.md) | Incremental cache system and performance |
 
 ## License
 
