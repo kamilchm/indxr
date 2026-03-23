@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{self, Value, json};
 
-use crate::model::declarations::{DeclKind, Declaration};
+use crate::model::declarations::{DeclKind, Declaration, Visibility};
 use crate::model::{CodebaseIndex, FileIndex};
 
 // ---------------------------------------------------------------------------
@@ -202,6 +204,92 @@ fn to_shallow(decl: &Declaration) -> ShallowDeclaration {
 }
 
 // ---------------------------------------------------------------------------
+// Shared helpers for per-file tools
+// ---------------------------------------------------------------------------
+
+/// Build a summary JSON value for a file (reused by get_file_summary and get_file_context).
+fn file_summary_data(file: &FileIndex) -> Value {
+    let shallow_decls: Vec<ShallowDeclaration> = file.declarations.iter().map(to_shallow).collect();
+
+    // Single-pass traversal: count by kind, public symbols, and test presence
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    let mut public_symbols = 0usize;
+    let mut has_tests = false;
+    fn scan_decls(
+        decls: &[Declaration],
+        counts: &mut HashMap<String, usize>,
+        public_symbols: &mut usize,
+        has_tests: &mut bool,
+    ) {
+        for d in decls {
+            *counts.entry(format!("{}", d.kind)).or_insert(0) += 1;
+            if matches!(d.visibility, Visibility::Public) {
+                *public_symbols += 1;
+            }
+            if d.is_test {
+                *has_tests = true;
+            }
+            scan_decls(&d.children, counts, public_symbols, has_tests);
+        }
+    }
+    scan_decls(
+        &file.declarations,
+        &mut counts,
+        &mut public_symbols,
+        &mut has_tests,
+    );
+
+    let import_texts: Vec<&str> = file.imports.iter().map(|i| i.text.as_str()).collect();
+
+    json!({
+        "file": file.path.to_string_lossy(),
+        "language": file.language.name(),
+        "size": file.size,
+        "lines": file.lines,
+        "imports": import_texts,
+        "declarations": shallow_decls,
+        "counts": counts,
+        "has_tests": has_tests,
+        "public_symbols": public_symbols
+    })
+}
+
+/// Recursively find a declaration by name within a file's declarations.
+fn find_decl_by_name<'a>(decls: &'a [Declaration], name: &str) -> Option<&'a Declaration> {
+    fn search<'a>(decls: &'a [Declaration], name_lower: &str) -> Option<&'a Declaration> {
+        for d in decls {
+            if d.name.to_lowercase() == name_lower {
+                return Some(d);
+            }
+            if let Some(found) = search(&d.children, name_lower) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    search(decls, &name.to_lowercase())
+}
+
+/// Read a range of lines from a file on disk. Lines are 1-based.
+fn read_line_range(path: &Path, start: usize, end: usize) -> Result<String, String> {
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let lines: Vec<&str> = content.lines().collect();
+    let total = lines.len();
+
+    if start == 0 || start > total {
+        return Err(format!(
+            "start_line {} out of range (file has {} lines)",
+            start, total
+        ));
+    }
+
+    let end = end.min(total);
+    let selected: Vec<&str> = lines[start - 1..end].to_vec();
+    Ok(selected.join("\n"))
+}
+
+// ---------------------------------------------------------------------------
 // Tool definitions for tools/list
 // ---------------------------------------------------------------------------
 
@@ -302,6 +390,64 @@ fn tool_definitions() -> Value {
                     "properties": {},
                     "required": []
                 }
+            },
+            {
+                "name": "get_file_summary",
+                "description": "Get a complete overview of a file in one call: metadata, imports, declarations (shallow), kind counts, public symbol count, and test presence.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "File path (relative to project root)"
+                        }
+                    },
+                    "required": ["path"]
+                }
+            },
+            {
+                "name": "read_source",
+                "description": "Read source code from a file, either by symbol name (uses indexed line info) or by explicit line range. Returns the actual source text from disk.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "File path (relative to project root)"
+                        },
+                        "symbol": {
+                            "type": "string",
+                            "description": "Symbol name to read (looks up declaration and extracts its source)"
+                        },
+                        "start_line": {
+                            "type": "number",
+                            "description": "Start line (1-based) for explicit line range mode"
+                        },
+                        "end_line": {
+                            "type": "number",
+                            "description": "End line (1-based, inclusive) for explicit line range mode"
+                        },
+                        "expand": {
+                            "type": "number",
+                            "description": "Extra context lines above and below the target range (default 0)"
+                        }
+                    },
+                    "required": ["path"]
+                }
+            },
+            {
+                "name": "get_file_context",
+                "description": "Get a file's summary plus its dependency context: which files import it (reverse dependencies) and related files (tests, siblings in the same directory).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "File path (relative to project root)"
+                        }
+                    },
+                    "required": ["path"]
+                }
             }
         ]
     })
@@ -319,6 +465,9 @@ fn handle_tool_call(index: &CodebaseIndex, name: &str, args: &Value) -> Value {
         "get_tree" => tool_get_tree(index, args),
         "get_imports" => tool_get_imports(index, args),
         "get_stats" => tool_get_stats(index),
+        "get_file_summary" => tool_get_file_summary(index, args),
+        "read_source" => tool_read_source(index, args),
+        "get_file_context" => tool_get_file_context(index, args),
         _ => tool_error(&format!("Unknown tool: {}", name)),
     }
 }
@@ -517,6 +666,207 @@ fn tool_get_stats(index: &CodebaseIndex) -> Value {
         "languages": index.stats.languages,
         "duration_ms": index.stats.duration_ms
     }))
+}
+
+fn tool_get_file_summary(index: &CodebaseIndex, args: &Value) -> Value {
+    let path = match args.get("path").and_then(|v| v.as_str()) {
+        Some(p) => p,
+        None => return tool_error("Missing required parameter: path"),
+    };
+
+    let file = match find_file(index, path) {
+        Some(f) => f,
+        None => return tool_error(&format!("File not found in index: {}", path)),
+    };
+
+    tool_result(file_summary_data(file))
+}
+
+fn tool_read_source(index: &CodebaseIndex, args: &Value) -> Value {
+    let path = match args.get("path").and_then(|v| v.as_str()) {
+        Some(p) => p,
+        None => return tool_error("Missing required parameter: path"),
+    };
+
+    let file = match find_file(index, path) {
+        Some(f) => f,
+        None => return tool_error(&format!("File not found in index: {}", path)),
+    };
+
+    let expand = args.get("expand").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+
+    let symbol_name = args.get("symbol").and_then(|v| v.as_str());
+    let start_line = args.get("start_line").and_then(|v| v.as_u64());
+    let end_line = args.get("end_line").and_then(|v| v.as_u64());
+
+    let (start, end, symbol_info) = if let Some(sym) = symbol_name {
+        // Symbol mode: look up the declaration
+        let decl = match find_decl_by_name(&file.declarations, sym) {
+            Some(d) => d,
+            None => {
+                return tool_error(&format!(
+                    "Symbol '{}' not found in {}",
+                    sym,
+                    file.path.to_string_lossy()
+                ));
+            }
+        };
+        let body = decl.body_lines.unwrap_or(1);
+        let s = decl.line;
+        let e = decl.line + body;
+        (s, e, Some((decl.name.clone(), format!("{}", decl.kind))))
+    } else if let (Some(s), Some(e)) = (start_line, end_line) {
+        (s as usize, e as usize, None)
+    } else {
+        return tool_error("Provide either 'symbol' or both 'start_line' and 'end_line'");
+    };
+
+    // Apply expand and cap at 200 lines
+    let start = if expand < start { start - expand } else { 1 };
+    let end = end + expand;
+    let max_lines = 200;
+    let end = if end - start + 1 > max_lines {
+        start + max_lines - 1
+    } else {
+        end
+    };
+
+    let abs_path = index.root.join(&file.path);
+    let source = match read_line_range(&abs_path, start, end) {
+        Ok(s) => s,
+        Err(e) => return tool_error(&e),
+    };
+
+    let mut result = json!({
+        "file": file.path.to_string_lossy(),
+        "start_line": start,
+        "end_line": end,
+        "source": source
+    });
+    if let Some((name, kind)) = symbol_info {
+        result["symbol"] = json!(name);
+        result["kind"] = json!(kind);
+    }
+    tool_result(result)
+}
+
+fn tool_get_file_context(index: &CodebaseIndex, args: &Value) -> Value {
+    let path = match args.get("path").and_then(|v| v.as_str()) {
+        Some(p) => p,
+        None => return tool_error("Missing required parameter: path"),
+    };
+
+    let file = match find_file(index, path) {
+        Some(f) => f,
+        None => return tool_error(&format!("File not found in index: {}", path)),
+    };
+
+    let mut summary = file_summary_data(file);
+
+    // --- Reverse dependencies: find files whose imports reference this file ---
+    let file_path_str = file.path.to_string_lossy().to_string();
+    let file_stem = file
+        .path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    // Build path-based match targets (e.g., "parser/mod", "parser")
+    let path_no_ext = file.path.with_extension("").to_string_lossy().to_string();
+    // For mod.rs files, also match on the parent directory name
+    let parent_module = if file_stem == "mod" || file_stem == "index" {
+        file.path
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|s| s.to_string_lossy().to_string())
+    } else {
+        None
+    };
+
+    #[derive(Serialize)]
+    struct ImportedBy {
+        file: String,
+        import: String,
+    }
+
+    let mut imported_by: Vec<ImportedBy> = Vec::new();
+    for other_file in &index.files {
+        let other_path = other_file.path.to_string_lossy().to_string();
+        if other_path == file_path_str {
+            continue; // skip self
+        }
+        for imp in &other_file.imports {
+            let text = &imp.text;
+            // Skip stem-based matching for very short stems (high false-positive rate)
+            let matches = (file_stem.len() >= 3 && text.contains(&file_stem))
+                || text.contains(&path_no_ext)
+                || parent_module
+                    .as_ref()
+                    .is_some_and(|pm| pm.len() >= 3 && text.contains(pm.as_str()));
+            if matches {
+                imported_by.push(ImportedBy {
+                    file: other_path.clone(),
+                    import: text.clone(),
+                });
+                break; // one match per file is enough
+            }
+        }
+    }
+
+    // --- Related files: tests and siblings ---
+    #[derive(Serialize)]
+    struct RelatedFile {
+        file: String,
+        relation: String,
+    }
+
+    let mut related: Vec<RelatedFile> = Vec::new();
+    let file_dir = file.path.parent().unwrap_or(Path::new(""));
+
+    // Test file patterns
+    let test_patterns: Vec<String> = vec![
+        format!("{}_test.", file_stem),
+        format!("{}_spec.", file_stem),
+        format!("test_{}.", file_stem),
+        format!("{}.test.", file_stem),
+        format!("{}.spec.", file_stem),
+    ];
+
+    let mut sibling_count = 0usize;
+    for other_file in &index.files {
+        let other_path_str = other_file.path.to_string_lossy().to_string();
+        if other_path_str == file_path_str {
+            continue;
+        }
+
+        // Check for test files (anywhere in the project)
+        let other_name = other_file
+            .path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if test_patterns.iter().any(|p| other_name.starts_with(p)) {
+            related.push(RelatedFile {
+                file: other_path_str.clone(),
+                relation: "test".to_string(),
+            });
+            continue;
+        }
+
+        // Check for siblings (same directory, cap at 10)
+        let other_dir = other_file.path.parent().unwrap_or(Path::new(""));
+        if other_dir == file_dir && sibling_count < 10 {
+            related.push(RelatedFile {
+                file: other_path_str,
+                relation: "sibling".to_string(),
+            });
+            sibling_count += 1;
+        }
+    }
+
+    summary["imported_by"] = json!(imported_by);
+    summary["related_files"] = json!(related);
+
+    tool_result(summary)
 }
 
 /// Find a FileIndex whose path matches the given string. Supports both exact
