@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
+use globset::GlobBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::{self, Value, json};
 
@@ -596,6 +597,10 @@ fn tool_definitions() -> Value {
                         "path": {
                             "type": "string",
                             "description": "File path or directory prefix (relative to project root). Omit for entire codebase."
+                        },
+                        "limit": {
+                            "type": "number",
+                            "description": "Maximum number of declarations to return (default 100, max 500)"
                         }
                     },
                     "required": []
@@ -975,20 +980,26 @@ fn tool_read_source(index: &CodebaseIndex, args: &Value) -> Value {
     if let Some(sym_arr) = symbols {
         let abs_path = index.root.join(&file.path);
         let mut entries = Vec::new();
+        let mut not_found = Vec::new();
         let mut total_lines = 0usize;
         let max_total_lines = 500;
+        let mut truncated_at_limit = false;
 
         for sym_val in sym_arr {
-            if total_lines >= max_total_lines {
-                break;
-            }
             let sym = match sym_val.as_str() {
                 Some(s) => s,
                 None => continue,
             };
+            if total_lines >= max_total_lines {
+                truncated_at_limit = true;
+                break;
+            }
             let decl = match find_decl_by_name(&file.declarations, sym) {
                 Some(d) => d,
-                None => continue,
+                None => {
+                    not_found.push(sym.to_string());
+                    continue;
+                }
             };
             let body = decl.body_lines.unwrap_or(1);
             let s = if expand < decl.line { decl.line - expand } else { 1 };
@@ -1011,10 +1022,18 @@ fn tool_read_source(index: &CodebaseIndex, args: &Value) -> Value {
             }
         }
 
-        return tool_result(json!({
+        let mut result = json!({
             "file": file.path.to_string_lossy(),
             "symbols": entries
-        }));
+        });
+        if !not_found.is_empty() {
+            result["not_found"] = json!(not_found);
+        }
+        if truncated_at_limit {
+            result["truncated"] = json!(true);
+            result["line_limit"] = json!(max_total_lines);
+        }
+        return tool_result(result);
     }
 
     // Single symbol or line range mode
@@ -1522,46 +1541,32 @@ fn score_decls_recursive(
 // Shared helpers for new tools
 // ---------------------------------------------------------------------------
 
-/// Simple glob matching against a path string.
-/// Supports `*` (single segment wildcard) and `**` (multi-segment).
-/// Also handles bare extension patterns like `*.rs`.
+/// Glob matching against a path string using the `globset` crate.
+/// Falls back to exact/directory-prefix matching if the pattern has no glob chars.
+/// Patterns without `/` (e.g., `*.rs`) are treated as recursive (`**/*.rs`).
 fn simple_glob_match(pattern: &str, path: &str) -> bool {
-    // Handle "*.ext" — match by extension
-    if pattern.starts_with("*.") && !pattern.contains('/') {
-        let ext = &pattern[1..]; // e.g. ".rs"
-        return path.ends_with(ext);
+    // If no glob metacharacters, treat as exact or directory prefix match
+    if !pattern.contains('*') && !pattern.contains('?') && !pattern.contains('[') {
+        return path == pattern || path.starts_with(&format!("{}/", pattern));
     }
 
-    // Handle "**/*.ext" or "**/name" — recursive match on suffix
-    if let Some(rest) = pattern.strip_prefix("**/") {
-        if rest.starts_with("*.") && !rest.contains('/') {
-            // "**/*.rs" → match any file ending in ".rs"
-            let ext = &rest[1..];
-            return path.ends_with(ext);
-        }
-        // "**/foo.rs" → match any path ending with "/foo.rs" or equal to "foo.rs"
-        return path == rest || path.ends_with(&format!("/{}", rest));
-    }
+    // Bare glob without path separator (e.g. "*.rs") → make recursive ("**/*.rs")
+    let owned;
+    let effective = if !pattern.contains('/') {
+        owned = format!("**/{}", pattern);
+        &owned
+    } else {
+        pattern
+    };
 
-    // Handle "dir/**" or "dir/*" — prefix match
-    if let Some(prefix) = pattern.strip_suffix("/**") {
-        return path.starts_with(prefix) || path.starts_with(&format!("{}/", prefix));
-    }
-    if let Some(prefix) = pattern.strip_suffix("/*") {
-        // Match one level only
-        if let Some(rest) = path.strip_prefix(prefix).and_then(|r| r.strip_prefix('/')) {
-            return !rest.contains('/');
-        }
-        return false;
-    }
-
-    // Handle "dir/prefix*" — prefix with wildcard
-    if let Some(prefix) = pattern.strip_suffix('*') {
-        return path.starts_with(prefix);
-    }
-
-    // Exact match or directory prefix
-    path == pattern || path.starts_with(&format!("{}/", pattern))
+    let glob = match GlobBuilder::new(effective)
+        .literal_separator(true)
+        .build()
+    {
+        Ok(g) => g,
+        Err(_) => return false,
+    };
+    glob.compile_matcher().is_match(path)
 }
 
 /// Split an identifier into constituent words.
@@ -1691,8 +1696,11 @@ fn collapse_nested_bodies(source: &str) -> String {
             prev_char = ch;
             continue;
         }
-        // Detect string start
-        if ch == '"' || ch == '\'' {
+        // Detect double-quoted string start.
+        // Single quotes are NOT treated as string delimiters because in Rust
+        // (and Go, etc.) 'a is a lifetime, not a string. Char literals like 'x'
+        // rarely contain braces, so ignoring them is safe for brace-depth tracking.
+        if ch == '"' {
             in_string = true;
             escaped = false;
             string_char = ch;
@@ -2036,6 +2044,11 @@ fn tool_get_callers(index: &CodebaseIndex, args: &Value) -> Value {
 
 fn tool_get_public_api(index: &CodebaseIndex, args: &Value) -> Value {
     let path = args.get("path").and_then(|v| v.as_str());
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(100)
+        .min(500) as usize;
     let mut declarations = Vec::new();
 
     let files: Vec<&FileIndex> = if let Some(p) = path {
@@ -2058,11 +2071,21 @@ fn tool_get_public_api(index: &CodebaseIndex, args: &Value) -> Value {
         collect_public_decls(&file.declarations, &file_path, &mut declarations);
     }
 
-    tool_result(json!({
+    let total = declarations.len();
+    let truncated = total > limit;
+    declarations.truncate(limit);
+
+    let mut result = json!({
         "path": path.unwrap_or("(all)"),
         "count": declarations.len(),
         "declarations": declarations
-    }))
+    });
+    if truncated {
+        result["truncated"] = json!(true);
+        result["total"] = json!(total);
+        result["limit"] = json!(limit);
+    }
+    tool_result(result)
 }
 
 fn tool_explain_symbol(index: &CodebaseIndex, args: &Value) -> Value {
@@ -2414,6 +2437,17 @@ mod tests {
         // Recursive glob with filename
         assert!(simple_glob_match("**/mod.rs", "src/parser/mod.rs"));
         assert!(!simple_glob_match("**/mod.rs", "src/parser/lib.rs"));
+        // Nested glob mid-path (was unsupported by hand-rolled impl)
+        assert!(simple_glob_match("src/**/*.test.rs", "src/parser/foo.test.rs"));
+        assert!(!simple_glob_match("src/**/*.test.rs", "src/parser/foo.rs"));
+        // Exact match (no glob chars)
+        assert!(simple_glob_match("src/main.rs", "src/main.rs"));
+        assert!(!simple_glob_match("src/main.rs", "src/lib.rs"));
+        // Directory prefix (no glob chars)
+        assert!(simple_glob_match("src/parser", "src/parser/mod.rs"));
+        // Question mark wildcard
+        assert!(simple_glob_match("src/ma?n.rs", "src/main.rs"));
+        assert!(!simple_glob_match("src/ma?n.rs", "src/maain.rs"));
     }
 
     // -----------------------------------------------------------------------
@@ -2561,6 +2595,18 @@ mod tests {
         let result = collapse_nested_bodies(input);
         // Only depth 1, nothing to collapse
         assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_collapse_rust_lifetimes() {
+        // Lifetimes like 'a should NOT be treated as string delimiters
+        let input = "fn foo<'a>(x: &'a str) {\n    if x.is_empty() {\n        return;\n    }\n}";
+        let result = collapse_nested_bodies(input);
+        // The lifetime annotations should pass through unchanged
+        assert!(result.contains("'a"));
+        // The inner if block should still be collapsed
+        assert!(result.contains("{ ... }"));
+        assert!(!result.contains("return"));
     }
 
     // -----------------------------------------------------------------------
