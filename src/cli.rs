@@ -127,6 +127,45 @@ pub enum Command {
         #[arg(long)]
         no_gitignore: bool,
     },
+
+    /// Initialize indxr configuration files for AI agent integration
+    Init {
+        /// Root directory to initialize
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Set up for Claude Code (.mcp.json, CLAUDE.md, .claude/settings.json)
+        #[arg(long)]
+        claude: bool,
+
+        /// Set up for Cursor (.cursor/mcp.json, .cursorrules)
+        #[arg(long)]
+        cursor: bool,
+
+        /// Set up for Windsurf (.windsurf/mcp.json, .windsurfrules)
+        #[arg(long)]
+        windsurf: bool,
+
+        /// Set up for all supported agents
+        #[arg(long, conflicts_with_all = ["claude", "cursor", "windsurf"])]
+        all: bool,
+
+        /// Skip generating INDEX.md
+        #[arg(long)]
+        no_index: bool,
+
+        /// Skip PreToolUse hooks for Claude Code (.claude/settings.json)
+        #[arg(long)]
+        no_hooks: bool,
+
+        /// Overwrite existing files without prompting
+        #[arg(long)]
+        force: bool,
+
+        /// Skip files larger than N kilobytes (passed to indexer)
+        #[arg(long, default_value = "512")]
+        max_file_size: u64,
+    },
 }
 
 #[derive(Debug, Clone, clap::ValueEnum)]

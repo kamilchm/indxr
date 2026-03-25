@@ -15,6 +15,7 @@ indxr                                        # index cwd → stdout
 indxr ./my-project -o INDEX.md               # index project → file
 indxr -f json -l rust,python -o index.json   # JSON, filter by language
 indxr serve ./my-project                     # start MCP server
+indxr init                                   # set up all agent configs
 ```
 
 ## Output
@@ -155,54 +156,32 @@ indxr serve ./my-project
 
 18 tools total. `compact` mode on list tools saves ~30% tokens. See [MCP Server docs](docs/mcp-server.md) for full parameter details.
 
-MCP config:
+### Quick Setup
 
-```json
-{
-  "mcpServers": {
-    "indxr": {
-      "command": "indxr",
-      "args": ["serve", "/path/to/project"]
-    }
-  }
-}
+```bash
+indxr init                    # set up for all agents (Claude Code, Cursor, Windsurf)
+indxr init --claude           # Claude Code only
+indxr init --cursor           # Cursor only
+indxr init --windsurf         # Windsurf only
 ```
 
-**Getting agents to actually use it:** Agents don't always pick MCP tools over file reads on their own. indxr ships with reinforcement mechanisms for Claude Code:
+This creates all configuration files in one command:
 
-- **`.claude/settings.json` hooks** — PreToolUse hooks that intercept `Read` and `Bash` calls, reminding the agent to use indxr MCP tools (`get_file_summary`, `read_source`, `get_diff_summary`) instead of reading full files or running `git diff`
-- **`CLAUDE.md` instructions** — a template that teaches the agent the exploration workflow, token costs, and when full reads are justified
+| Agent | Files Created |
+|-------|--------------|
+| Claude Code | `.mcp.json`, `CLAUDE.md`, `.claude/settings.json` (PreToolUse hooks) |
+| Cursor | `.cursor/mcp.json`, `.cursorrules` |
+| Windsurf | `.windsurf/mcp.json`, `.windsurfrules` |
+| All | `.gitignore` entry, `INDEX.md` (static index) |
 
-Ready-to-copy `.claude/settings.json`:
+Use `--no-index` to skip INDEX.md generation, `--no-hooks` to skip PreToolUse hooks, `--force` to overwrite existing files.
 
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Read",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "echo 'IMPORTANT: Before reading full source files, use indxr MCP tools to minimize token usage:\n- get_file_summary: understand a file without reading it (~300 tokens vs ~3000+)\n- lookup_symbol / search_signatures: find specific functions/types\n- read_source: read only the exact function/symbol you need (~100 tokens vs full file)\nOnly use Read when you need to EDIT a file, need exact formatting, or the file is not source code (e.g., CLAUDE.md, Cargo.toml).'"
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "if echo \"$TOOL_INPUT\" | grep -qE 'git\\s+diff'; then echo 'IMPORTANT: Use indxr get_diff_summary MCP tool instead of git diff. It shows structural changes (added/removed/modified declarations) at ~200-500 tokens vs thousands for raw diffs. Example: get_diff_summary(since_ref: \"main\")'; fi"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
+**Getting agents to actually use it:** Agents don't always pick MCP tools over file reads on their own. `indxr init` sets up reinforcement mechanisms automatically:
 
-See [Agent Integration](docs/agent-integration.md#claude-code) for full setup details and a CLAUDE.md example.
+- **`.claude/settings.json` hooks** — PreToolUse hooks that intercept `Read` and `Bash` calls, reminding the agent to use indxr MCP tools instead of reading full files or running `git diff`
+- **`CLAUDE.md` / `.cursorrules` / `.windsurfrules`** — agent instruction files that teach the exploration workflow, token costs, and when full reads are justified
+
+See [Agent Integration](docs/agent-integration.md) for manual setup details and advanced configuration.
 
 Setup guides: [docs/mcp-server.md](docs/mcp-server.md)
 

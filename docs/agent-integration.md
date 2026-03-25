@@ -40,11 +40,28 @@ indxr serve ./my-project
 - Agents that support MCP (Claude Code, Claude Desktop, Cursor, Windsurf)
 - When the full index is too large for the context window
 
+## Quick Setup
+
+The fastest way to set up indxr for any agent is the `init` command:
+
+```bash
+indxr init                    # all agents (Claude Code, Cursor, Windsurf)
+indxr init --claude           # Claude Code only
+indxr init --cursor           # Cursor only
+indxr init --windsurf         # Windsurf only
+```
+
+This creates all configuration files, agent instruction files, PreToolUse hooks, and an initial INDEX.md in one command. Use `--no-index` to skip INDEX.md generation, `--no-hooks` to skip PreToolUse hooks, `--force` to overwrite existing files.
+
+The sections below describe what each file does and how to set things up manually.
+
 ## Agent-Specific Setup
 
 ### Claude Code
 
-Claude Code supports MCP servers natively. Add indxr to your project's `.mcp.json`:
+**Automated setup:** `indxr init --claude` creates `.mcp.json`, `CLAUDE.md`, and `.claude/settings.json` automatically.
+
+**Manual setup:** Claude Code supports MCP servers natively. Add indxr to your project's `.mcp.json`:
 
 ```json
 {
@@ -163,7 +180,9 @@ Restart Claude Desktop after updating the config. The indxr tools will appear in
 
 ### Cursor
 
-Cursor supports MCP servers. Add to your Cursor MCP configuration:
+**Automated setup:** `indxr init --cursor` creates `.cursor/mcp.json` and `.cursorrules` automatically.
+
+**Manual setup:** Cursor supports MCP servers. Add to your Cursor MCP configuration:
 
 **Settings → MCP Servers → Add Server:**
 
@@ -195,7 +214,9 @@ of all files, functions, classes, and imports.
 
 ### Windsurf
 
-Windsurf supports MCP servers. Add to your MCP configuration:
+**Automated setup:** `indxr init --windsurf` creates `.windsurf/mcp.json` and `.windsurfrules` automatically.
+
+**Manual setup:** Windsurf supports MCP servers. Add to your MCP configuration:
 
 ```json
 {
