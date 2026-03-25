@@ -41,6 +41,7 @@ pub struct GraphEdge {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum EdgeKind {
     Imports,
+    References,
     Extends,
     Implements,
 }
@@ -83,18 +84,13 @@ fn resolve_import<'a>(
 
     // Normalize separators: `crate::parser::queries` → `crate/parser/queries`
     //                       `com.example.MyClass`    → `com/example/MyClass`
-    let normalized = cleaned
-        .replace("::", "/")
-        .replace('.', "/");
+    let normalized = cleaned.replace("::", "/").replace('.', "/");
 
     // Strip common prefixes that don't map to paths
     let stripped = strip_import_prefixes(&normalized);
 
     // Split into segments
-    let segments: Vec<&str> = stripped
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .collect();
+    let segments: Vec<&str> = stripped.split('/').filter(|s| !s.is_empty()).collect();
 
     if segments.is_empty() {
         return None;
@@ -160,14 +156,9 @@ fn resolve_relative_import<'a>(
     // Try exact match, then with common extensions
     for path in all_paths {
         let path_str = path.to_string_lossy().to_lowercase();
-        let path_no_ext = path
-            .with_extension("")
-            .to_string_lossy()
-            .to_lowercase();
+        let path_no_ext = path.with_extension("").to_string_lossy().to_lowercase();
 
-        if (path_str == resolved_str || path_no_ext == resolved_str)
-            && *path != from_file
-        {
+        if (path_str == resolved_str || path_no_ext == resolved_str) && *path != from_file {
             return Some(path);
         }
     }
@@ -176,10 +167,7 @@ fn resolve_relative_import<'a>(
     for suffix in &["/index", "/mod"] {
         let dir_import = format!("{}{}", resolved_str, suffix);
         for path in all_paths {
-            let path_no_ext = path
-                .with_extension("")
-                .to_string_lossy()
-                .to_lowercase();
+            let path_no_ext = path.with_extension("").to_string_lossy().to_lowercase();
             if path_no_ext == dir_import && *path != from_file {
                 return Some(path);
             }
@@ -264,10 +252,7 @@ fn match_path_candidate<'a>(candidate_lower: &str, all_paths: &[&'a Path]) -> Op
 
     for path in all_paths {
         let path_str = path.to_string_lossy().to_lowercase();
-        let path_no_ext = path
-            .with_extension("")
-            .to_string_lossy()
-            .to_lowercase();
+        let path_no_ext = path.with_extension("").to_string_lossy().to_lowercase();
 
         // Check if the path ends with our candidate (with or without extension)
         let matches = path_str.ends_with(candidate_lower)
@@ -451,7 +436,9 @@ pub fn build_symbol_graph(
     let name_to_ids: HashMap<&str, Vec<&str>> = {
         let mut map: HashMap<&str, Vec<&str>> = HashMap::new();
         for sym in &symbols {
-            map.entry(sym.name.as_str()).or_default().push(sym.id.as_str());
+            map.entry(sym.name.as_str())
+                .or_default()
+                .push(sym.id.as_str());
         }
         map
     };
@@ -466,12 +453,7 @@ pub fn build_symbol_graph(
                 continue;
             }
         }
-        collect_relationship_edges(
-            &file.declarations,
-            &file_path,
-            &name_to_ids,
-            &mut edge_set,
-        );
+        collect_relationship_edges(&file.declarations, &file_path, &name_to_ids, &mut edge_set);
     }
 
     // Build edges from signature references (word-boundary matching)
@@ -496,11 +478,7 @@ pub fn build_symbol_graph(
                 continue;
             }
             if contains_word_boundary(&sym.signature, type_name) {
-                edge_set.insert((
-                    sym.id.clone(),
-                    type_id.to_string(),
-                    EdgeKind::Imports, // "references" — using Imports as a general edge
-                ));
+                edge_set.insert((sym.id.clone(), type_id.to_string(), EdgeKind::References));
             }
         }
     }
@@ -553,8 +531,6 @@ pub fn build_symbol_graph(
 struct SymInfo {
     id: String,
     name: String,
-    #[allow(dead_code)]
-    file: String,
     signature: String,
 }
 
@@ -566,7 +542,6 @@ fn collect_symbols_ext(decls: &[Declaration], file_path: &str, out: &mut Vec<Sym
         out.push(SymInfo {
             id: format!("{}::{}", file_path, decl.name),
             name: decl.name.clone(),
-            file: file_path.to_string(),
             signature: decl.signature.clone(),
         });
         collect_symbols_ext(&decl.children, file_path, out);
@@ -642,6 +617,7 @@ fn limit_depth_symbol(
 
 /// Format graph as DOT (Graphviz) string.
 pub fn format_dot(graph: &DepGraph) -> String {
+    let escape = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
     let mut out = String::new();
     out.push_str("digraph dependencies {\n");
     out.push_str("  rankdir=LR;\n");
@@ -649,17 +625,20 @@ pub fn format_dot(graph: &DepGraph) -> String {
     out.push('\n');
 
     for edge in &graph.edges {
+        let from = escape(&edge.from);
+        let to = escape(&edge.to);
         let label = match edge.kind {
             EdgeKind::Imports => "",
+            EdgeKind::References => "references",
             EdgeKind::Extends => "extends",
             EdgeKind::Implements => "implements",
         };
         if label.is_empty() {
-            out.push_str(&format!("  \"{}\" -> \"{}\";\n", edge.from, edge.to));
+            out.push_str(&format!("  \"{}\" -> \"{}\";\n", from, to));
         } else {
             out.push_str(&format!(
                 "  \"{}\" -> \"{}\" [label=\"{}\"];\n",
-                edge.from, edge.to, label
+                from, to, label
             ));
         }
     }
@@ -671,6 +650,7 @@ pub fn format_dot(graph: &DepGraph) -> String {
 /// Format graph as Mermaid string.
 pub fn format_mermaid(graph: &DepGraph) -> String {
     let mut out = String::new();
+    out.push_str("```mermaid\n");
     out.push_str("graph LR\n");
 
     // Build id → sanitized-id map for Mermaid (no special chars in ids)
@@ -689,6 +669,7 @@ pub fn format_mermaid(graph: &DepGraph) -> String {
         let to_san = sanitize(&edge.to);
         let arrow = match edge.kind {
             EdgeKind::Imports => "-->",
+            EdgeKind::References => "-.->|references|",
             EdgeKind::Extends => "-->|extends|",
             EdgeKind::Implements => "-->|implements|",
         };
@@ -698,6 +679,7 @@ pub fn format_mermaid(graph: &DepGraph) -> String {
         ));
     }
 
+    out.push_str("```\n");
     out
 }
 
@@ -719,7 +701,7 @@ mod tests {
     use std::path::PathBuf;
 
     use crate::languages::Language;
-    use crate::model::declarations::{Declaration, DeclKind, Relationship, RelKind, Visibility};
+    use crate::model::declarations::{DeclKind, Declaration, RelKind, Relationship, Visibility};
     use crate::model::{CodebaseIndex, FileIndex, Import, IndexStats};
 
     fn make_index(files: Vec<FileIndex>) -> CodebaseIndex {
@@ -840,10 +822,7 @@ mod tests {
 
     #[test]
     fn test_resolve_python_import() {
-        let paths: Vec<&Path> = vec![
-            Path::new("app/models.py"),
-            Path::new("app/views.py"),
-        ];
+        let paths: Vec<&Path> = vec![Path::new("app/models.py"), Path::new("app/views.py")];
         let from = Path::new("app/views.py");
 
         let result = resolve_import("app.models", from, &paths);
@@ -855,10 +834,7 @@ mod tests {
 
     #[test]
     fn test_no_resolve_external_import() {
-        let paths: Vec<&Path> = vec![
-            Path::new("src/main.rs"),
-            Path::new("src/lib.rs"),
-        ];
+        let paths: Vec<&Path> = vec![Path::new("src/main.rs"), Path::new("src/lib.rs")];
         let from = Path::new("src/main.rs");
 
         let result = resolve_import("std::collections::HashMap", from, &paths);
@@ -867,10 +843,7 @@ mod tests {
 
     #[test]
     fn test_no_resolve_short_stem() {
-        let paths: Vec<&Path> = vec![
-            Path::new("src/io.rs"),
-            Path::new("src/main.rs"),
-        ];
+        let paths: Vec<&Path> = vec![Path::new("src/io.rs"), Path::new("src/main.rs")];
         let from = Path::new("src/main.rs");
 
         // "io" is only 2 chars — should not produce false matches
@@ -920,9 +893,11 @@ mod tests {
 
     #[test]
     fn test_file_graph_no_external_edges() {
-        let index = make_index(vec![
-            make_file("src/main.rs", vec!["std::collections::HashMap"], vec![]),
-        ]);
+        let index = make_index(vec![make_file(
+            "src/main.rs",
+            vec!["std::collections::HashMap"],
+            vec![],
+        )]);
 
         let graph = build_file_graph(&index, None, None);
         assert!(graph.edges.is_empty());
@@ -1048,6 +1023,8 @@ mod tests {
         };
 
         let mermaid = format_mermaid(&graph);
+        assert!(mermaid.starts_with("```mermaid\n"));
+        assert!(mermaid.ends_with("```\n"));
         assert!(mermaid.contains("graph LR"));
         assert!(mermaid.contains("-->"));
         assert!(mermaid.contains("a_rs"));

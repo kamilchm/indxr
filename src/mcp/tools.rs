@@ -1488,10 +1488,7 @@ pub(super) fn tool_get_related_tests(index: &CodebaseIndex, args: &Value) -> Val
 
 pub(super) fn tool_get_dependency_graph(index: &CodebaseIndex, args: &Value) -> Value {
     let path = args.get("path").and_then(|v| v.as_str());
-    let level = args
-        .get("level")
-        .and_then(|v| v.as_str())
-        .unwrap_or("file");
+    let level = args.get("level").and_then(|v| v.as_str()).unwrap_or("file");
     let format = args
         .get("format")
         .and_then(|v| v.as_str())

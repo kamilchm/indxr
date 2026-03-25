@@ -1197,11 +1197,22 @@ fn test_tool_dependency_graph_file_level_mermaid() {
     // cache.rs imports crate::parser::parse_file → should resolve to src/parser.rs
     let node_count = content["nodes"].as_u64().unwrap();
     let edge_count = content["edges"].as_u64().unwrap();
-    assert!(node_count >= 1, "Expected at least 1 node, got {}", node_count);
-    assert!(edge_count >= 1, "Expected at least 1 edge, got {}", edge_count);
+    assert!(
+        node_count >= 1,
+        "Expected at least 1 node, got {}",
+        node_count
+    );
+    assert!(
+        edge_count >= 1,
+        "Expected at least 1 edge, got {}",
+        edge_count
+    );
     let graph = content["graph"].as_str().unwrap();
     assert!(graph.contains("graph LR"));
-    assert!(graph.contains("parser"), "Graph should reference parser file");
+    assert!(
+        graph.contains("parser"),
+        "Graph should reference parser file"
+    );
     assert!(graph.contains("cache"), "Graph should reference cache file");
 }
 
@@ -1231,8 +1242,7 @@ fn test_tool_dependency_graph_file_level_json() {
 #[test]
 fn test_tool_dependency_graph_symbol_level() {
     let index = make_test_index();
-    let result =
-        tool_get_dependency_graph(&index, &json!({ "level": "symbol", "format": "json" }));
+    let result = tool_get_dependency_graph(&index, &json!({ "level": "symbol", "format": "json" }));
     let content: Value =
         serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(content["format"], "json");
@@ -1241,17 +1251,21 @@ fn test_tool_dependency_graph_symbol_level() {
     assert!(graph.get("edges").unwrap().is_array());
     // Cache is a struct, and parse_file returns Result<FileIndex> — signature references
     // may produce edges. At minimum the structure is valid.
-    assert!(content["nodes"].as_u64().is_some(), "nodes should be a number");
-    assert!(content["edges"].as_u64().is_some(), "edges should be a number");
+    assert!(
+        content["nodes"].as_u64().is_some(),
+        "nodes should be a number"
+    );
+    assert!(
+        content["edges"].as_u64().is_some(),
+        "edges should be a number"
+    );
 }
 
 #[test]
 fn test_tool_dependency_graph_scoped() {
     let index = make_test_index();
-    let result = tool_get_dependency_graph(
-        &index,
-        &json!({ "path": "src/cache", "format": "json" }),
-    );
+    let result =
+        tool_get_dependency_graph(&index, &json!({ "path": "src/cache", "format": "json" }));
     let content: Value =
         serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     let graph = &content["graph"];
