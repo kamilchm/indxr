@@ -1,4 +1,5 @@
-pub(crate) mod helpers;
+mod helpers;
+pub(crate) use helpers::contains_word_boundary;
 mod tools;
 
 #[cfg(test)]

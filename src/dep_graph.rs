@@ -4,7 +4,7 @@ use std::path::Path;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::mcp::helpers::contains_word_boundary;
+use crate::mcp::contains_word_boundary;
 use crate::model::CodebaseIndex;
 use crate::model::declarations::{Declaration, RelKind};
 
@@ -171,7 +171,7 @@ fn normalize_import_separators(text: &str) -> String {
             // Check if this looks like a file extension: dot followed by 1-4 alnum chars at end or before non-alnum
             let rest = &after_colons[i + 1..];
             let ext_len = rest.chars().take_while(|c| c.is_alphanumeric()).count();
-            let after_ext = rest.chars().skip(ext_len).next();
+            let after_ext = rest.chars().nth(ext_len);
             let is_extension = (1..=4).contains(&ext_len)
                 && (after_ext.is_none() || !after_ext.unwrap().is_alphanumeric());
 
@@ -504,16 +504,12 @@ pub fn build_symbol_graph(
 
     // Build edges from signature references (word-boundary matching)
     // Only check type/struct/class/interface/trait names in signatures
+    let type_keywords: &[&str] = &["struct ", "class ", "trait ", "interface ", "type ", "enum "];
     let type_names: Vec<(&str, &str)> = all_symbols
         .iter()
         .filter(|s| {
             let sig_lower = s.signature.to_lowercase();
-            sig_lower.starts_with("struct ")
-                || sig_lower.starts_with("class ")
-                || sig_lower.starts_with("trait ")
-                || sig_lower.starts_with("interface ")
-                || sig_lower.starts_with("type ")
-                || sig_lower.starts_with("enum ")
+            type_keywords.iter().any(|kw| sig_lower.contains(kw))
         })
         .map(|s| (s.name.as_str(), s.id.as_str()))
         .collect();
@@ -709,34 +705,30 @@ pub fn format_mermaid(graph: &DepGraph) -> String {
     out.push_str("```mermaid\n");
     out.push_str("graph LR\n");
 
-    // Build id → sanitized-id map for Mermaid (no special chars in ids)
-    let sanitize = |s: &str| -> String {
-        s.chars()
-            .map(|c| match c {
-                '/' | '.' | ':' | '-' | ' ' => '_',
-                c if c.is_alphanumeric() || c == '_' => c,
-                _ => '_',
-            })
-            .collect()
-    };
+    // Build id → unique Mermaid-safe node ID map (indexed to avoid collisions
+    // from different IDs that would sanitize to the same string, e.g. a-b vs a_b)
+    let mut id_map: HashMap<&str, String> = HashMap::new();
+    for (i, node) in graph.nodes.iter().enumerate() {
+        id_map.insert(&node.id, format!("n{}", i));
+    }
 
     // Emit node declarations once
     for node in &graph.nodes {
-        let san = sanitize(&node.id);
-        out.push_str(&format!("  {}[\"{}\"]\n", san, node.id));
+        let nid = &id_map[node.id.as_str()];
+        out.push_str(&format!("  {}[\"{}\"]\n", nid, node.id));
     }
 
-    // Emit edges referencing sanitized ids only
+    // Emit edges referencing mapped ids
     for edge in &graph.edges {
-        let from_san = sanitize(&edge.from);
-        let to_san = sanitize(&edge.to);
+        let from_nid = &id_map[edge.from.as_str()];
+        let to_nid = &id_map[edge.to.as_str()];
         let arrow = match edge.kind {
             EdgeKind::Imports => "-->",
             EdgeKind::References => "-.->|references|",
             EdgeKind::Extends => "-->|extends|",
             EdgeKind::Implements => "-->|implements|",
         };
-        out.push_str(&format!("  {} {} {}\n", from_san, arrow, to_san));
+        out.push_str(&format!("  {} {} {}\n", from_nid, arrow, to_nid));
     }
 
     out.push_str("```\n");
@@ -1210,8 +1202,8 @@ mod tests {
         assert!(mermaid.ends_with("```\n"));
         assert!(mermaid.contains("graph LR"));
         assert!(mermaid.contains("-->"));
-        assert!(mermaid.contains("a_rs"));
-        assert!(mermaid.contains("b_rs"));
+        assert!(mermaid.contains("n0[\"a.rs\"]"));
+        assert!(mermaid.contains("n1[\"b.rs\"]"));
     }
 
     #[test]
@@ -1243,5 +1235,90 @@ mod tests {
         let json = format_json(&graph);
         assert!(json.get("nodes").unwrap().as_array().unwrap().len() == 1);
         assert!(json.get("edges").unwrap().as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_symbol_graph_pub_struct_signature_reference() {
+        // Signatures with visibility prefixes (as produced by real parsers)
+        let mut parser_struct = make_struct("Parser");
+        parser_struct.signature = "pub struct Parser".to_string();
+
+        let mut func = make_decl("run_parser", "pub fn run_parser(p: &Parser) -> Result<()>");
+        func.signature = "pub fn run_parser(p: &Parser) -> Result<()>".to_string();
+
+        let index = make_index(vec![
+            make_file("src/parser.rs", vec![], vec![parser_struct]),
+            make_file("src/main.rs", vec![], vec![func]),
+        ]);
+
+        let graph = build_symbol_graph(&index, None, None);
+        let ref_edges: Vec<_> = graph
+            .edges
+            .iter()
+            .filter(|e| e.from.contains("run_parser") && e.to.contains("Parser"))
+            .collect();
+        assert_eq!(
+            ref_edges.len(),
+            1,
+            "pub struct signatures must be detected for reference edges"
+        );
+    }
+
+    #[test]
+    fn test_file_graph_depth_zero() {
+        let index = make_index(vec![
+            make_file("src/main.rs", vec!["crate::parser"], vec![]),
+            make_file("src/parser/mod.rs", vec![], vec![]),
+        ]);
+
+        // depth=0 from main: no hops allowed, so no edges
+        let graph = build_file_graph(&index, Some("main"), Some(0));
+        assert!(
+            graph.edges.is_empty(),
+            "depth=0 should produce no edges beyond seed set"
+        );
+    }
+
+    #[test]
+    fn test_empty_codebase_graph() {
+        let index = make_index(vec![]);
+
+        let file_graph = build_file_graph(&index, None, None);
+        assert!(file_graph.nodes.is_empty());
+        assert!(file_graph.edges.is_empty());
+
+        let sym_graph = build_symbol_graph(&index, None, None);
+        assert!(sym_graph.nodes.is_empty());
+        assert!(sym_graph.edges.is_empty());
+    }
+
+    #[test]
+    fn test_mermaid_no_id_collision() {
+        // Two IDs that would collide under naive char-replacement sanitization
+        let graph = DepGraph {
+            nodes: vec![
+                GraphNode {
+                    id: "src/a-b.rs".to_string(),
+                    label: "a-b.rs".to_string(),
+                    kind: NodeKind::File,
+                },
+                GraphNode {
+                    id: "src/a_b.rs".to_string(),
+                    label: "a_b.rs".to_string(),
+                    kind: NodeKind::File,
+                },
+            ],
+            edges: vec![GraphEdge {
+                from: "src/a-b.rs".to_string(),
+                to: "src/a_b.rs".to_string(),
+                kind: EdgeKind::Imports,
+            }],
+        };
+
+        let mermaid = format_mermaid(&graph);
+        // Both nodes must appear with distinct IDs
+        assert!(mermaid.contains("n0[\"src/a-b.rs\"]"));
+        assert!(mermaid.contains("n1[\"src/a_b.rs\"]"));
+        assert!(mermaid.contains("n0 --> n1"));
     }
 }
