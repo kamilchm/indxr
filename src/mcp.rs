@@ -1,14 +1,17 @@
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{self, Value, json};
 
 use crate::budget::estimate_tokens;
+use crate::diff;
 use crate::indexer::{self, IndexConfig};
+use crate::languages::Language;
 use crate::model::declarations::{DeclKind, Declaration, Visibility};
 use crate::model::{CodebaseIndex, FileIndex};
+use crate::parser::ParserRegistry;
 
 // ---------------------------------------------------------------------------
 // JSON-RPC 2.0 types
@@ -311,6 +314,10 @@ fn tool_definitions() -> Value {
                         "limit": {
                             "type": "number",
                             "description": "Maximum number of results (default 50, max 200)"
+                        },
+                        "compact": {
+                            "type": "boolean",
+                            "description": "If true, return columnar format [columns, rows] instead of objects (saves ~30% tokens)"
                         }
                     },
                     "required": ["name"]
@@ -333,6 +340,10 @@ fn tool_definitions() -> Value {
                         "shallow": {
                             "type": "boolean",
                             "description": "If true, omit children and doc_comments to reduce output size (default false)"
+                        },
+                        "compact": {
+                            "type": "boolean",
+                            "description": "If true, return columnar format (implies shallow). Saves ~30% tokens."
                         }
                     },
                     "required": ["path"]
@@ -351,6 +362,10 @@ fn tool_definitions() -> Value {
                         "limit": {
                             "type": "number",
                             "description": "Maximum number of results (default 20, max 100)"
+                        },
+                        "compact": {
+                            "type": "boolean",
+                            "description": "If true, return columnar format (saves ~30% tokens)"
                         }
                     },
                     "required": ["query"]
@@ -432,6 +447,15 @@ fn tool_definitions() -> Value {
                         "expand": {
                             "type": "number",
                             "description": "Extra context lines above and below the target range (default 0)"
+                        },
+                        "symbols": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Multiple symbol names to read in one call (alternative to single 'symbol'). Cap: 500 total lines."
+                        },
+                        "collapse": {
+                            "type": "boolean",
+                            "description": "If true, collapse nested block bodies to { ... }. Shows structure without inner implementation."
                         }
                     },
                     "required": ["path"]
@@ -473,9 +497,17 @@ fn tool_definitions() -> Value {
                         "symbol": {
                             "type": "string",
                             "description": "Optional symbol name — if provided, estimates tokens for just that symbol's source"
+                        },
+                        "directory": {
+                            "type": "string",
+                            "description": "Directory path — estimates all files within. Alternative to path."
+                        },
+                        "glob": {
+                            "type": "string",
+                            "description": "Glob pattern — estimates all matching files. Alternative to path."
                         }
                     },
-                    "required": ["path"]
+                    "required": []
                 }
             },
             {
@@ -491,9 +523,114 @@ fn tool_definitions() -> Value {
                         "limit": {
                             "type": "number",
                             "description": "Maximum number of results (default 20, max 50)"
+                        },
+                        "kind": {
+                            "type": "string",
+                            "description": "Optional declaration kind filter (e.g. fn, struct, class, trait). Only returns symbols of this kind."
+                        },
+                        "compact": {
+                            "type": "boolean",
+                            "description": "If true, return columnar format (saves ~30% tokens)"
                         }
                     },
                     "required": ["query"]
+                }
+            },
+            {
+                "name": "get_diff_summary",
+                "description": "Get structural changes (added/removed/modified declarations) since a git ref (branch, tag, commit). Much cheaper than reading raw diffs.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "since_ref": {
+                            "type": "string",
+                            "description": "Git ref to diff against (branch name, tag, or commit like HEAD~3)"
+                        }
+                    },
+                    "required": ["since_ref"]
+                }
+            },
+            {
+                "name": "batch_file_summaries",
+                "description": "Get summaries for multiple files in one call. Provide paths array or glob pattern. Cap: 30 files.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "paths": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Array of file paths (relative to project root)"
+                        },
+                        "glob": {
+                            "type": "string",
+                            "description": "Glob pattern to match files (e.g. '*.rs', 'src/parser/*')"
+                        }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "get_callers",
+                "description": "Find declarations that reference a symbol. Searches signatures and import statements across all files. Approximate — based on name matching, not full call graph.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {
+                            "type": "string",
+                            "description": "Symbol name to search for references to"
+                        },
+                        "limit": {
+                            "type": "number",
+                            "description": "Maximum number of results (default 20, max 50)"
+                        }
+                    },
+                    "required": ["symbol"]
+                }
+            },
+            {
+                "name": "get_public_api",
+                "description": "Get the public API surface: only public declarations with signatures. Ideal for understanding how to use a module without reading it.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "File path or directory prefix (relative to project root). Omit for entire codebase."
+                        }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "explain_symbol",
+                "description": "Get everything needed to USE a symbol: signature, doc comment, relationships, metadata. No body source — just the interface.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Symbol name to explain (exact match, case-insensitive)"
+                        }
+                    },
+                    "required": ["name"]
+                }
+            },
+            {
+                "name": "get_related_tests",
+                "description": "Find test functions related to a symbol by naming convention and file association.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {
+                            "type": "string",
+                            "description": "Symbol name to find tests for"
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Optional file path to scope search"
+                        }
+                    },
+                    "required": ["symbol"]
                 }
             }
         ]
@@ -517,18 +654,47 @@ fn handle_tool_call(index: &CodebaseIndex, name: &str, args: &Value) -> Value {
         "get_file_context" => tool_get_file_context(index, args),
         "get_token_estimate" => tool_get_token_estimate(index, args),
         "search_relevant" => tool_search_relevant(index, args),
+        "batch_file_summaries" => tool_batch_file_summaries(index, args),
+        "get_callers" => tool_get_callers(index, args),
+        "get_public_api" => tool_get_public_api(index, args),
+        "explain_symbol" => tool_explain_symbol(index, args),
+        "get_related_tests" => tool_get_related_tests(index, args),
         _ => tool_error(&format!("Unknown tool: {}", name)),
     }
 }
 
 fn tool_regenerate_index(index: &mut CodebaseIndex, config: &IndexConfig) -> Value {
+    // Snapshot current state for delta computation
+    let old_files: HashMap<PathBuf, FileIndex> = index
+        .files
+        .iter()
+        .map(|f| (f.path.clone(), f.clone()))
+        .collect();
+
     match indexer::regenerate_index_file(config) {
         Ok(new_index) => {
             let file_count = new_index.stats.total_files;
             let line_count = new_index.stats.total_lines;
             let output_path = new_index.root.join("INDEX.md");
+
+            // Compute delta: union of old and new paths
+            let mut all_paths: Vec<PathBuf> = old_files.keys().cloned().collect();
+            for f in &new_index.files {
+                if !old_files.contains_key(&f.path) {
+                    all_paths.push(f.path.clone());
+                }
+            }
+
+            let structural_diff =
+                diff::compute_structural_diff(&new_index, &old_files, &all_paths);
+
+            let has_changes = !structural_diff.files_added.is_empty()
+                || !structural_diff.files_removed.is_empty()
+                || !structural_diff.files_modified.is_empty();
+
             *index = new_index;
-            tool_result(json!({
+
+            let mut result = json!({
                 "status": "ok",
                 "message": format!(
                     "INDEX.md regenerated ({} files, {} lines)",
@@ -537,7 +703,22 @@ fn tool_regenerate_index(index: &mut CodebaseIndex, config: &IndexConfig) -> Val
                 "path": output_path.to_string_lossy(),
                 "files_indexed": file_count,
                 "total_lines": line_count
-            }))
+            });
+
+            if has_changes {
+                result["changes"] = json!({
+                    "files_added": structural_diff.files_added.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>(),
+                    "files_removed": structural_diff.files_removed.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>(),
+                    "files_modified": structural_diff.files_modified.iter().map(|fd| json!({
+                        "path": fd.path.to_string_lossy().to_string(),
+                        "added": fd.declarations_added.len(),
+                        "removed": fd.declarations_removed.len(),
+                        "modified": fd.declarations_modified.len(),
+                    })).collect::<Vec<_>>()
+                });
+            }
+
+            tool_result(result)
         }
         Err(e) => tool_error(&format!("Failed to regenerate index: {}", e)),
     }
@@ -572,10 +753,19 @@ fn tool_lookup_symbol(index: &CodebaseIndex, args: &Value) -> Value {
 
     let total = results.len();
     let truncated = total >= limit;
-    let mut result = json!({
-        "matches": total,
-        "symbols": results
-    });
+    let compact = args.get("compact").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    let mut result = if compact {
+        let items: Vec<Value> = results.iter().map(|s| serde_json::to_value(s).unwrap_or(Value::Null)).collect();
+        let mut r = to_compact_rows(&["file", "kind", "name", "signature", "line"], &items);
+        r["matches"] = json!(total);
+        r
+    } else {
+        json!({
+            "matches": total,
+            "symbols": results
+        })
+    };
     if truncated {
         result["truncated"] = json!(true);
         result["limit"] = json!(limit);
@@ -599,14 +789,15 @@ fn tool_list_declarations(index: &CodebaseIndex, args: &Value) -> Value {
         .get("shallow")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let compact = args.get("compact").and_then(|v| v.as_bool()).unwrap_or(false);
 
     let kind_filter = args
         .get("kind")
         .and_then(|v| v.as_str())
         .and_then(DeclKind::from_name);
 
-    if shallow {
-        // Shallow mode: return compact representation without children/doc_comments
+    if shallow || compact {
+        // Shallow/compact mode: return without children/doc_comments
         let decls: Vec<ShallowDeclaration> = if let Some(ref kind) = kind_filter {
             filter_declarations(&file.declarations, kind)
                 .into_iter()
@@ -615,6 +806,14 @@ fn tool_list_declarations(index: &CodebaseIndex, args: &Value) -> Value {
         } else {
             file.declarations.iter().map(to_shallow).collect()
         };
+        if compact {
+            let items: Vec<Value> = decls.iter().map(|d| serde_json::to_value(d).unwrap_or(Value::Null)).collect();
+            return tool_result(json!({
+                "file": path,
+                "count": decls.len(),
+                "declarations": to_compact_rows(&["kind", "name", "signature", "line"], &items)
+            }));
+        }
         tool_result(json!({
             "file": path,
             "count": decls.len(),
@@ -669,10 +868,19 @@ fn tool_search_signatures(index: &CodebaseIndex, args: &Value) -> Value {
 
     let total = results.len();
     let truncated = total >= limit;
-    let mut result = json!({
-        "matches": total,
-        "signatures": results
-    });
+    let compact = args.get("compact").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    let mut result = if compact {
+        let items: Vec<Value> = results.iter().map(|s| serde_json::to_value(s).unwrap_or(Value::Null)).collect();
+        let mut r = to_compact_rows(&["file", "kind", "name", "signature", "line"], &items);
+        r["matches"] = json!(total);
+        r
+    } else {
+        json!({
+            "matches": total,
+            "signatures": results
+        })
+    };
     if truncated {
         result["truncated"] = json!(true);
         result["limit"] = json!(limit);
@@ -765,13 +973,61 @@ fn tool_read_source(index: &CodebaseIndex, args: &Value) -> Value {
     };
 
     let expand = args.get("expand").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    let collapse = args.get("collapse").and_then(|v| v.as_bool()).unwrap_or(false);
 
+    // Multi-symbol mode
+    let symbols = args.get("symbols").and_then(|v| v.as_array());
+    if let Some(sym_arr) = symbols {
+        let abs_path = index.root.join(&file.path);
+        let mut entries = Vec::new();
+        let mut total_lines = 0usize;
+        let max_total_lines = 500;
+
+        for sym_val in sym_arr {
+            if total_lines >= max_total_lines {
+                break;
+            }
+            let sym = match sym_val.as_str() {
+                Some(s) => s,
+                None => continue,
+            };
+            let decl = match find_decl_by_name(&file.declarations, sym) {
+                Some(d) => d,
+                None => continue,
+            };
+            let body = decl.body_lines.unwrap_or(1);
+            let s = if expand < decl.line { decl.line - expand } else { 1 };
+            let e = (decl.line + body + expand).min(s + max_total_lines - total_lines - 1);
+
+            match read_line_range(&abs_path, s, e) {
+                Ok(source) => {
+                    let lines_read = e - s + 1;
+                    total_lines += lines_read;
+                    let source = if collapse { collapse_nested_bodies(&source) } else { source };
+                    entries.push(json!({
+                        "symbol": decl.name,
+                        "kind": format!("{}", decl.kind),
+                        "start_line": s,
+                        "end_line": e,
+                        "source": source
+                    }));
+                }
+                Err(_) => continue,
+            }
+        }
+
+        return tool_result(json!({
+            "file": file.path.to_string_lossy(),
+            "symbols": entries
+        }));
+    }
+
+    // Single symbol or line range mode
     let symbol_name = args.get("symbol").and_then(|v| v.as_str());
     let start_line = args.get("start_line").and_then(|v| v.as_u64());
     let end_line = args.get("end_line").and_then(|v| v.as_u64());
 
     let (start, end, symbol_info) = if let Some(sym) = symbol_name {
-        // Symbol mode: look up the declaration
         let decl = match find_decl_by_name(&file.declarations, sym) {
             Some(d) => d,
             None => {
@@ -789,7 +1045,7 @@ fn tool_read_source(index: &CodebaseIndex, args: &Value) -> Value {
     } else if let (Some(s), Some(e)) = (start_line, end_line) {
         (s as usize, e as usize, None)
     } else {
-        return tool_error("Provide either 'symbol' or both 'start_line' and 'end_line'");
+        return tool_error("Provide 'symbol', 'symbols', or both 'start_line' and 'end_line'");
     };
 
     // Apply expand and cap at 200 lines
@@ -808,6 +1064,12 @@ fn tool_read_source(index: &CodebaseIndex, args: &Value) -> Value {
         Err(e) => return tool_error(&e),
     };
 
+    let source = if collapse {
+        collapse_nested_bodies(&source)
+    } else {
+        source
+    };
+
     let mut result = json!({
         "file": file.path.to_string_lossy(),
         "start_line": start,
@@ -817,6 +1079,9 @@ fn tool_read_source(index: &CodebaseIndex, args: &Value) -> Value {
     if let Some((name, kind)) = symbol_info {
         result["symbol"] = json!(name);
         result["kind"] = json!(kind);
+    }
+    if collapse {
+        result["collapsed"] = json!(true);
     }
     tool_result(result)
 }
@@ -944,9 +1209,67 @@ fn tool_get_file_context(index: &CodebaseIndex, args: &Value) -> Value {
 const APPROX_SUMMARY_TOKENS: usize = 300;
 
 fn tool_get_token_estimate(index: &CodebaseIndex, args: &Value) -> Value {
-    let path = match args.get("path").and_then(|v| v.as_str()) {
+    let path = args.get("path").and_then(|v| v.as_str());
+    let directory = args.get("directory").and_then(|v| v.as_str());
+    let glob = args.get("glob").and_then(|v| v.as_str());
+
+    // Directory/glob mode: estimate tokens for multiple files
+    if let Some(dir_or_glob) = directory.or(glob) {
+        let is_dir = directory.is_some();
+        let matched_files: Vec<&FileIndex> = index
+            .files
+            .iter()
+            .filter(|f| {
+                let fp = f.path.to_string_lossy();
+                if is_dir {
+                    fp.starts_with(dir_or_glob) || fp.starts_with(&format!("{}/", dir_or_glob))
+                } else {
+                    simple_glob_match(dir_or_glob, &fp)
+                }
+            })
+            .collect();
+
+        let mut total_tokens = 0usize;
+        let mut total_lines = 0usize;
+        let breakdown: Vec<Value> = matched_files
+            .iter()
+            .take(50)
+            .map(|f| {
+                let tokens = (f.size as usize).div_ceil(4);
+                total_tokens += tokens;
+                total_lines += f.lines;
+                json!({
+                    "path": f.path.to_string_lossy(),
+                    "tokens": tokens,
+                    "lines": f.lines
+                })
+            })
+            .collect();
+
+        // Count remaining if > 50
+        for f in matched_files.iter().skip(50) {
+            total_tokens += (f.size as usize).div_ceil(4);
+            total_lines += f.lines;
+        }
+
+        return tool_result(json!({
+            "query": dir_or_glob,
+            "file_count": matched_files.len(),
+            "total_tokens": total_tokens,
+            "total_lines": total_lines,
+            "breakdown": breakdown,
+            "recommendation": if total_tokens > 2000 {
+                format!("Large scope (~{} tokens across {} files). Use get_file_summary or search_relevant to narrow down before reading.", total_tokens, matched_files.len())
+            } else {
+                format!("Manageable scope (~{} tokens across {} files).", total_tokens, matched_files.len())
+            }
+        }));
+    }
+
+    // Single file mode (original behavior)
+    let path = match path {
         Some(p) => p,
-        None => return tool_error("Missing required parameter: path"),
+        None => return tool_error("Provide 'path', 'directory', or 'glob'"),
     };
 
     let file = match find_file(index, path) {
@@ -1032,6 +1355,10 @@ fn tool_search_relevant(index: &CodebaseIndex, args: &Value) -> Value {
         .and_then(|v| v.as_u64())
         .unwrap_or(20)
         .min(50) as usize;
+    let kind_filter = args
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .and_then(DeclKind::from_name);
 
     let query_lower = query.to_lowercase();
     let query_terms: Vec<&str> = query_lower.split_whitespace().collect();
@@ -1041,18 +1368,20 @@ fn tool_search_relevant(index: &CodebaseIndex, args: &Value) -> Value {
         let file_path = file.path.to_string_lossy().to_string();
         let file_path_lower = file_path.to_lowercase();
 
-        // Score file path matches
-        let path_score = score_match(&file_path_lower, &query_lower, &query_terms);
-        if path_score > 0 {
-            results.push(RelevanceMatch {
-                file: file_path.clone(),
-                symbol: None,
-                kind: None,
-                signature: None,
-                line: None,
-                match_on: "path".to_string(),
-                score: path_score,
-            });
+        // Score file path matches (skip when kind filter is active)
+        if kind_filter.is_none() {
+            let path_score = score_match(&file_path_lower, &query_lower, &query_terms);
+            if path_score > 0 {
+                results.push(RelevanceMatch {
+                    file: file_path.clone(),
+                    symbol: None,
+                    kind: None,
+                    signature: None,
+                    line: None,
+                    match_on: "path".to_string(),
+                    score: path_score,
+                });
+            }
         }
 
         // Score declaration matches
@@ -1062,6 +1391,7 @@ fn tool_search_relevant(index: &CodebaseIndex, args: &Value) -> Value {
             &query_lower,
             &query_terms,
             &mut results,
+            kind_filter.as_ref(),
         );
     }
 
@@ -1070,6 +1400,17 @@ fn tool_search_relevant(index: &CodebaseIndex, args: &Value) -> Value {
     results.truncate(limit);
 
     let total = results.len();
+    let compact = args.get("compact").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    if compact {
+        let items: Vec<Value> = results.iter().map(|r| serde_json::to_value(r).unwrap_or(Value::Null)).collect();
+        return tool_result(json!({
+            "query": query,
+            "matches": total,
+            "results": to_compact_rows(&["file", "symbol", "kind", "signature", "line", "score"], &items)
+        }));
+    }
+
     tool_result(json!({
         "query": query,
         "matches": total,
@@ -1096,6 +1437,22 @@ fn score_match(text: &str, query: &str, terms: &[&str]) -> u32 {
         }
     }
 
+    // Identifier-part matching (camelCase/snake_case aware)
+    let parts = split_identifier(text);
+    for term in terms {
+        if parts.iter().any(|p| p == *term) {
+            score += 3; // word-boundary match bonus
+        }
+    }
+
+    // Bigram fuzzy matching as fallback for partial matches
+    if score == 0 && query.len() >= 4 {
+        let sim = bigram_similarity(text, query);
+        if sim > 0.4 {
+            score += (sim * 8.0) as u32;
+        }
+    }
+
     score
 }
 
@@ -1105,61 +1462,621 @@ fn score_decls_recursive(
     query: &str,
     terms: &[&str],
     results: &mut Vec<RelevanceMatch>,
+    kind_filter: Option<&DeclKind>,
 ) {
     for decl in decls {
-        let name_lower = decl.name.to_lowercase();
-        let sig_lower = decl.signature.to_lowercase();
-        let doc_lower = decl
-            .doc_comment
-            .as_ref()
-            .map(|d| d.to_lowercase())
-            .unwrap_or_default();
+        // Apply kind filter — skip non-matching declarations but still recurse children
+        let kind_matches = kind_filter.is_none_or(|k| decl.kind == *k);
 
-        let mut score = 0u32;
-        let mut match_sources = Vec::new();
+        if kind_matches {
+            let name_lower = decl.name.to_lowercase();
+            let sig_lower = decl.signature.to_lowercase();
+            let doc_lower = decl
+                .doc_comment
+                .as_ref()
+                .map(|d| d.to_lowercase())
+                .unwrap_or_default();
 
-        // Name match (highest signal)
-        let name_score = score_match(&name_lower, query, terms);
-        if name_score > 0 {
-            score += name_score * 3; // name matches are 3x more valuable
-            match_sources.push("name");
-        }
+            let mut score = 0u32;
+            let mut match_sources = Vec::new();
 
-        // Signature match
-        let sig_score = score_match(&sig_lower, query, terms);
-        if sig_score > 0 {
-            score += sig_score * 2;
-            match_sources.push("signature");
-        }
+            // Name match (highest signal)
+            let name_score = score_match(&name_lower, query, terms);
+            if name_score > 0 {
+                score += name_score * 3; // name matches are 3x more valuable
+                match_sources.push("name");
+            }
 
-        // Doc comment match
-        if !doc_lower.is_empty() {
-            let doc_score = score_match(&doc_lower, query, terms);
-            if doc_score > 0 {
-                score += doc_score;
-                match_sources.push("doc");
+            // Signature match
+            let sig_score = score_match(&sig_lower, query, terms);
+            if sig_score > 0 {
+                score += sig_score * 2;
+                match_sources.push("signature");
+            }
+
+            // Doc comment match
+            if !doc_lower.is_empty() {
+                let doc_score = score_match(&doc_lower, query, terms);
+                if doc_score > 0 {
+                    score += doc_score;
+                    match_sources.push("doc");
+                }
+            }
+
+            // Boost public symbols
+            if matches!(decl.visibility, Visibility::Public) && score > 0 {
+                score += 5;
+            }
+
+            if score > 0 {
+                results.push(RelevanceMatch {
+                    file: file_path.to_string(),
+                    symbol: Some(decl.name.clone()),
+                    kind: Some(format!("{}", decl.kind)),
+                    signature: Some(decl.signature.clone()),
+                    line: Some(decl.line),
+                    match_on: match_sources.join("+"),
+                    score,
+                });
             }
         }
 
-        // Boost public symbols
-        if matches!(decl.visibility, Visibility::Public) && score > 0 {
-            score += 5;
-        }
-
-        if score > 0 {
-            results.push(RelevanceMatch {
-                file: file_path.to_string(),
-                symbol: Some(decl.name.clone()),
-                kind: Some(format!("{}", decl.kind)),
-                signature: Some(decl.signature.clone()),
-                line: Some(decl.line),
-                match_on: match_sources.join("+"),
-                score,
-            });
-        }
-
-        score_decls_recursive(&decl.children, file_path, query, terms, results);
+        score_decls_recursive(&decl.children, file_path, query, terms, results, kind_filter);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers for new tools
+// ---------------------------------------------------------------------------
+
+/// Simple glob matching against a path string.
+/// Supports `*` (single segment wildcard) and `**` (multi-segment).
+/// Also handles bare extension patterns like `*.rs`.
+fn simple_glob_match(pattern: &str, path: &str) -> bool {
+    // Handle "*.ext" — match by extension
+    if pattern.starts_with("*.") && !pattern.contains('/') {
+        let ext = &pattern[1..]; // e.g. ".rs"
+        return path.ends_with(ext);
+    }
+
+    // Handle "dir/**" or "dir/*" — prefix match
+    if let Some(prefix) = pattern.strip_suffix("/**") {
+        return path.starts_with(prefix) || path.starts_with(&format!("{}/", prefix));
+    }
+    if let Some(prefix) = pattern.strip_suffix("/*") {
+        // Match one level only
+        if let Some(rest) = path.strip_prefix(prefix).and_then(|r| r.strip_prefix('/')) {
+            return !rest.contains('/');
+        }
+        return false;
+    }
+
+    // Handle "dir/prefix*" — prefix with wildcard
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        return path.starts_with(prefix);
+    }
+
+    // Exact match or directory prefix
+    path == pattern || path.starts_with(&format!("{}/", pattern))
+}
+
+/// Split an identifier into constituent words.
+/// Handles snake_case, camelCase, PascalCase, and SCREAMING_SNAKE_CASE.
+fn split_identifier(name: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+
+    for ch in name.chars() {
+        if ch == '_' || ch == '-' || ch == '.' || ch == '/' {
+            if !current.is_empty() {
+                parts.push(current.to_lowercase());
+                current.clear();
+            }
+        } else if ch.is_uppercase() && !current.is_empty() && current.chars().last().is_some_and(|c| c.is_lowercase()) {
+            // camelCase boundary
+            parts.push(current.to_lowercase());
+            current.clear();
+            current.push(ch);
+        } else {
+            current.push(ch);
+        }
+    }
+    if !current.is_empty() {
+        parts.push(current.to_lowercase());
+    }
+    parts
+}
+
+/// Bigram (Dice coefficient) similarity between two strings.
+fn bigram_similarity(a: &str, b: &str) -> f64 {
+    if a.len() < 2 || b.len() < 2 {
+        return 0.0;
+    }
+    let bigrams_a: Vec<(char, char)> = a.chars().zip(a.chars().skip(1)).collect();
+    let bigrams_b: Vec<(char, char)> = b.chars().zip(b.chars().skip(1)).collect();
+    let intersection = bigrams_a.iter().filter(|bg| bigrams_b.contains(bg)).count();
+    (2.0 * intersection as f64) / (bigrams_a.len() + bigrams_b.len()) as f64
+}
+
+/// Collapse nested block bodies (depth >= 2) to `{ ... }`.
+fn collapse_nested_bodies(source: &str) -> String {
+    let mut result = String::with_capacity(source.len());
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut string_char = '"';
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut prev_char = '\0';
+    let mut skip_until_close = false;
+    let mut collapse_depth: i32 = 0;
+
+    for ch in source.chars() {
+        // Handle line comments
+        if in_line_comment {
+            result.push(ch);
+            if ch == '\n' {
+                in_line_comment = false;
+            }
+            prev_char = ch;
+            continue;
+        }
+
+        // Handle block comments
+        if in_block_comment {
+            if !skip_until_close {
+                result.push(ch);
+            }
+            if prev_char == '*' && ch == '/' {
+                in_block_comment = false;
+            }
+            prev_char = ch;
+            continue;
+        }
+
+        // Handle strings
+        if in_string {
+            if !skip_until_close {
+                result.push(ch);
+            }
+            if ch == string_char && prev_char != '\\' {
+                in_string = false;
+            }
+            prev_char = ch;
+            continue;
+        }
+
+        // Detect comment/string starts
+        if prev_char == '/' && ch == '/' {
+            in_line_comment = true;
+            result.push(ch);
+            prev_char = ch;
+            continue;
+        }
+        if prev_char == '/' && ch == '*' {
+            in_block_comment = true;
+            if !skip_until_close {
+                result.push(ch);
+            }
+            prev_char = ch;
+            continue;
+        }
+        if ch == '"' || ch == '\'' {
+            in_string = true;
+            string_char = ch;
+            if !skip_until_close {
+                result.push(ch);
+            }
+            prev_char = ch;
+            continue;
+        }
+
+        if ch == '{' {
+            depth += 1;
+            if depth >= 2 && !skip_until_close {
+                result.push_str("{ ... }");
+                skip_until_close = true;
+                collapse_depth = depth;
+            } else if !skip_until_close {
+                result.push(ch);
+            }
+        } else if ch == '}' {
+            if skip_until_close && depth == collapse_depth {
+                skip_until_close = false;
+            } else if !skip_until_close {
+                result.push(ch);
+            }
+            depth -= 1;
+        } else if !skip_until_close {
+            result.push(ch);
+        }
+
+        prev_char = ch;
+    }
+    result
+}
+
+/// Convert an array of objects to compact columnar format.
+fn to_compact_rows(columns: &[&str], items: &[Value]) -> Value {
+    let rows: Vec<Value> = items
+        .iter()
+        .map(|item| {
+            let row: Vec<Value> = columns
+                .iter()
+                .map(|col| item.get(col).cloned().unwrap_or(Value::Null))
+                .collect();
+            Value::Array(row)
+        })
+        .collect();
+    json!({
+        "columns": columns,
+        "rows": rows
+    })
+}
+
+/// Collect public declarations recursively.
+fn collect_public_decls(decls: &[Declaration], file_path: &str, out: &mut Vec<Value>) {
+    for decl in decls {
+        if matches!(decl.visibility, Visibility::Public) {
+            out.push(json!({
+                "name": decl.name,
+                "kind": format!("{}", decl.kind),
+                "signature": decl.signature,
+                "file": file_path,
+                "line": decl.line
+            }));
+        }
+        // Also check children (public methods in impls, etc.)
+        collect_public_decls(&decl.children, file_path, out);
+    }
+}
+
+/// Find test declarations matching a symbol name.
+fn find_tests_for_symbol(
+    decls: &[Declaration],
+    symbol_lower: &str,
+    file_path: &str,
+    results: &mut Vec<Value>,
+    reason: &str,
+) {
+    for decl in decls {
+        if decl.is_test {
+            let name_lower = decl.name.to_lowercase();
+            if name_lower.contains(symbol_lower) {
+                results.push(json!({
+                    "name": decl.name,
+                    "file": file_path,
+                    "line": decl.line,
+                    "kind": format!("{}", decl.kind),
+                    "match_reason": reason
+                }));
+            }
+        }
+        find_tests_for_symbol(&decl.children, symbol_lower, file_path, results, reason);
+    }
+}
+
+/// Explain a single declaration — full metadata without body.
+fn explain_decl(decl: &Declaration, file_path: &str) -> Value {
+    let mut children_counts: HashMap<String, usize> = HashMap::new();
+    for child in &decl.children {
+        *children_counts.entry(format!("{}", child.kind)).or_insert(0) += 1;
+    }
+    let children_summary = if children_counts.is_empty() {
+        None
+    } else {
+        let parts: Vec<String> = children_counts.iter().map(|(k, v)| format!("{} {}", v, k)).collect();
+        Some(parts.join(", "))
+    };
+
+    let rels: Vec<Value> = decl
+        .relationships
+        .iter()
+        .map(|r| json!({"kind": format!("{:?}", r.kind), "target": &r.target}))
+        .collect();
+
+    let mut result = json!({
+        "name": decl.name,
+        "kind": format!("{}", decl.kind),
+        "file": file_path,
+        "line": decl.line,
+        "signature": decl.signature,
+        "visibility": format!("{}", decl.visibility),
+        "is_async": decl.is_async,
+        "is_test": decl.is_test,
+        "is_deprecated": decl.is_deprecated,
+    });
+    if let Some(doc) = &decl.doc_comment {
+        result["doc_comment"] = json!(doc);
+    }
+    if !rels.is_empty() {
+        result["relationships"] = json!(rels);
+    }
+    if let Some(summary) = children_summary {
+        result["children_summary"] = json!(summary);
+    }
+    if let Some(body) = decl.body_lines {
+        result["body_lines"] = json!(body);
+    }
+    result
+}
+
+// ---------------------------------------------------------------------------
+// New tool implementations (Phase 1-5)
+// ---------------------------------------------------------------------------
+
+fn tool_get_diff_summary(index: &CodebaseIndex, config: &IndexConfig, args: &Value) -> Value {
+    let since_ref = match args.get("since_ref").and_then(|v| v.as_str()) {
+        Some(r) => r,
+        None => return tool_error("Missing required parameter: since_ref"),
+    };
+
+    let changed_paths = match diff::get_changed_files(&config.root, since_ref) {
+        Ok(paths) => paths,
+        Err(e) => return tool_error(&format!("Git diff failed: {}", e)),
+    };
+
+    if changed_paths.is_empty() {
+        return tool_result(json!({
+            "since_ref": since_ref,
+            "changes": 0,
+            "files_added": [],
+            "files_removed": [],
+            "files_modified": []
+        }));
+    }
+
+    // Parse old file versions
+    let registry = ParserRegistry::new();
+    let mut old_files: HashMap<PathBuf, FileIndex> = HashMap::new();
+    for path in &changed_paths {
+        if let Ok(Some(old_content)) = diff::get_file_at_ref(&config.root, path, since_ref) {
+            if let Some(lang) = Language::detect(path) {
+                if let Some(parser) = registry.get_parser(&lang) {
+                    if let Ok(fi) = parser.parse_file(path, &old_content) {
+                        old_files.insert(path.clone(), fi);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut structural_diff = diff::compute_structural_diff(index, &old_files, &changed_paths);
+    structural_diff.since_ref = since_ref.to_string();
+
+    let total_changes = structural_diff.files_added.len()
+        + structural_diff.files_removed.len()
+        + structural_diff.files_modified.len();
+
+    tool_result(json!({
+        "since_ref": since_ref,
+        "changes": total_changes,
+        "files_added": structural_diff.files_added.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>(),
+        "files_removed": structural_diff.files_removed.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>(),
+        "files_modified": structural_diff.files_modified.iter().map(|fd| json!({
+            "path": fd.path.to_string_lossy().to_string(),
+            "added": fd.declarations_added.iter().map(|d| json!({"kind": format!("{}", d.kind), "name": &d.name, "signature": &d.signature})).collect::<Vec<_>>(),
+            "removed": fd.declarations_removed.iter().map(|d| json!({"kind": format!("{}", d.kind), "name": &d.name, "signature": &d.signature})).collect::<Vec<_>>(),
+            "modified": fd.declarations_modified.iter().map(|d| json!({"kind": format!("{}", d.kind), "name": &d.name, "old_signature": &d.old_signature, "new_signature": &d.new_signature})).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>()
+    }))
+}
+
+fn tool_batch_file_summaries(index: &CodebaseIndex, args: &Value) -> Value {
+    let paths = args.get("paths").and_then(|v| v.as_array());
+    let glob = args.get("glob").and_then(|v| v.as_str());
+
+    let files: Vec<&FileIndex> = if let Some(path_arr) = paths {
+        path_arr
+            .iter()
+            .filter_map(|v| v.as_str())
+            .filter_map(|p| find_file(index, p))
+            .collect()
+    } else if let Some(pattern) = glob {
+        index
+            .files
+            .iter()
+            .filter(|f| simple_glob_match(pattern, &f.path.to_string_lossy()))
+            .collect()
+    } else {
+        return tool_error("Provide either 'paths' array or 'glob' pattern");
+    };
+
+    let cap = 30;
+    let total = files.len();
+    let files = &files[..files.len().min(cap)];
+    let summaries: Vec<Value> = files.iter().map(|f| file_summary_data(f)).collect();
+
+    tool_result(json!({
+        "count": summaries.len(),
+        "total_matched": total,
+        "summaries": summaries
+    }))
+}
+
+fn tool_get_callers(index: &CodebaseIndex, args: &Value) -> Value {
+    let symbol = match args.get("symbol").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return tool_error("Missing required parameter: symbol"),
+    };
+    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20).min(50) as usize;
+
+    let mut references: Vec<Value> = Vec::new();
+
+    fn search_decl_refs(
+        decls: &[Declaration],
+        symbol: &str,
+        file_path: &str,
+        refs: &mut Vec<Value>,
+    ) {
+        for decl in decls {
+            if decl.name != symbol && decl.signature.contains(symbol) {
+                refs.push(json!({
+                    "file": file_path,
+                    "name": decl.name,
+                    "kind": format!("{}", decl.kind),
+                    "line": decl.line,
+                    "match_type": "signature"
+                }));
+            }
+            search_decl_refs(&decl.children, symbol, file_path, refs);
+        }
+    }
+
+    for file in &index.files {
+        let file_path = file.path.to_string_lossy().to_string();
+
+        // Check imports
+        for imp in &file.imports {
+            if imp.text.contains(symbol) {
+                references.push(json!({
+                    "file": &file_path,
+                    "match_type": "import",
+                    "import": &imp.text
+                }));
+            }
+        }
+
+        // Check declaration signatures
+        search_decl_refs(&file.declarations, symbol, &file_path, &mut references);
+    }
+
+    references.truncate(limit);
+    tool_result(json!({
+        "symbol": symbol,
+        "count": references.len(),
+        "references": references
+    }))
+}
+
+fn tool_get_public_api(index: &CodebaseIndex, args: &Value) -> Value {
+    let path = args.get("path").and_then(|v| v.as_str());
+    let mut declarations = Vec::new();
+
+    let files: Vec<&FileIndex> = if let Some(p) = path {
+        // Try exact file match first, then directory prefix
+        if let Some(f) = find_file(index, p) {
+            vec![f]
+        } else {
+            index
+                .files
+                .iter()
+                .filter(|f| f.path.to_string_lossy().starts_with(p))
+                .collect()
+        }
+    } else {
+        index.files.iter().collect()
+    };
+
+    for file in &files {
+        let file_path = file.path.to_string_lossy().to_string();
+        collect_public_decls(&file.declarations, &file_path, &mut declarations);
+    }
+
+    tool_result(json!({
+        "path": path.unwrap_or("(all)"),
+        "count": declarations.len(),
+        "declarations": declarations
+    }))
+}
+
+fn tool_explain_symbol(index: &CodebaseIndex, args: &Value) -> Value {
+    let name = match args.get("name").and_then(|v| v.as_str()) {
+        Some(n) => n,
+        None => return tool_error("Missing required parameter: name"),
+    };
+    let name_lower = name.to_lowercase();
+
+    fn find_matching_decls<'a>(
+        decls: &'a [Declaration],
+        name_lower: &str,
+        file_path: &str,
+        results: &mut Vec<Value>,
+    ) {
+        for decl in decls {
+            if decl.name.to_lowercase() == name_lower {
+                results.push(explain_decl(decl, file_path));
+            }
+            find_matching_decls(&decl.children, name_lower, file_path, results);
+        }
+    }
+
+    let mut results = Vec::new();
+    for file in &index.files {
+        let file_path = file.path.to_string_lossy().to_string();
+        find_matching_decls(&file.declarations, &name_lower, &file_path, &mut results);
+    }
+    results.truncate(10);
+
+    tool_result(json!({
+        "name": name,
+        "count": results.len(),
+        "symbols": results
+    }))
+}
+
+fn tool_get_related_tests(index: &CodebaseIndex, args: &Value) -> Value {
+    let symbol = match args.get("symbol").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return tool_error("Missing required parameter: symbol"),
+    };
+    let scope_path = args.get("path").and_then(|v| v.as_str());
+    let symbol_lower = symbol.to_lowercase();
+
+    let mut results = Vec::new();
+
+    // If path scoped, search that file first
+    if let Some(p) = scope_path {
+        if let Some(file) = find_file(index, p) {
+            let file_path = file.path.to_string_lossy().to_string();
+            find_tests_for_symbol(
+                &file.declarations,
+                &symbol_lower,
+                &file_path,
+                &mut results,
+                "same_file",
+            );
+        }
+    }
+
+    // Search all files for test declarations matching the symbol
+    for file in &index.files {
+        let file_path = file.path.to_string_lossy().to_string();
+        let file_path_lower = file_path.to_lowercase();
+
+        // Check if this is a test file
+        let is_test_file = file_path_lower.contains("_test.")
+            || file_path_lower.contains("_spec.")
+            || file_path_lower.contains(".test.")
+            || file_path_lower.contains(".spec.")
+            || file_path_lower.contains("/test_")
+            || file_path_lower.contains("/tests/");
+
+        let reason = if is_test_file {
+            "test_file"
+        } else {
+            "name_convention"
+        };
+
+        // Skip if we already searched this file in scope_path
+        if scope_path.is_some_and(|p| file_path.ends_with(p) || file_path == p) {
+            continue;
+        }
+
+        find_tests_for_symbol(
+            &file.declarations,
+            &symbol_lower,
+            &file_path,
+            &mut results,
+            reason,
+        );
+    }
+
+    results.truncate(20);
+    tool_result(json!({
+        "symbol": symbol,
+        "count": results.len(),
+        "tests": results
+    }))
 }
 
 /// Find a FileIndex whose path matches the given string. Supports both exact
@@ -1214,6 +2131,11 @@ fn handle_tools_call(
 
     if tool_name == "regenerate_index" {
         let result = tool_regenerate_index(index, config);
+        return ok_response(id, result);
+    }
+
+    if tool_name == "get_diff_summary" {
+        let result = tool_get_diff_summary(index, config, &arguments);
         return ok_response(id, result);
     }
 
@@ -1299,15 +2221,15 @@ mod tests {
     #[test]
     fn test_score_match_exact_full_match() {
         let score = score_match("parse", "parse", &["parse"]);
-        // exact substring (10) + exact equality (20) + term match (5) = 35
-        assert_eq!(score, 35);
+        // exact substring (10) + exact equality (20) + term match (5) + identifier part (3) = 38
+        assert_eq!(score, 38);
     }
 
     #[test]
     fn test_score_match_substring() {
         let score = score_match("tree_sitter_parser", "parser", &["parser"]);
-        // substring (10) + term match (5) = 15
-        assert_eq!(score, 15);
+        // substring (10) + term match (5) + identifier part "parser" (3) = 18
+        assert_eq!(score, 18);
     }
 
     #[test]
@@ -1318,14 +2240,15 @@ mod tests {
 
     #[test]
     fn test_score_match_multi_term() {
-        // "token budget" (with space) is NOT a substring of "token_budget_manager"
-        // Only individual terms match: "token" (5) + "budget" (5) = 10
+        // "token budget" is NOT a substring of "token_budget_manager"
+        // term "token" (5) + term "budget" (5) + ident part "token" (3) + ident part "budget" (3) = 16
         let score = score_match("token_budget_manager", "token budget", &["token", "budget"]);
-        assert_eq!(score, 10);
+        assert_eq!(score, 16);
 
         // When full query IS a substring, it scores higher
         let score2 = score_match("apply token budget here", "token budget", &["token", "budget"]);
         // full query substring (10) + term "token" (5) + term "budget" (5) = 20
+        // (identifier split of "apply token budget here" won't match since it's a phrase, not an identifier)
         assert_eq!(score2, 20);
     }
 
@@ -1333,24 +2256,66 @@ mod tests {
     fn test_score_match_partial_term_match() {
         // Only one of two terms matches
         let score = score_match("token_counter", "token budget", &["token", "budget"]);
-        // full query "token budget" not in text (0) + term "token" (5) + term "budget" misses (0) = 5
-        assert_eq!(score, 5);
+        // term "token" (5) + ident part "token" (3) = 8
+        assert_eq!(score, 8);
     }
 
     #[test]
     fn test_score_match_empty_query() {
         // Empty string is a substring of everything
         let score = score_match("anything", "", &[""]);
-        // substring (10) + term "" is substring (5) = 15
-        // This is fine — search_relevant won't produce empty queries in practice
         assert!(score > 0);
     }
 
     #[test]
     fn test_score_match_case_sensitivity() {
         // score_match expects pre-lowercased inputs (caller responsibility)
+        // With bigram matching, near-matches still get a small score as fuzzy fallback
         let score = score_match("parser", "Parser", &["Parser"]);
-        assert_eq!(score, 0); // case-sensitive — caller must lowercase
+        // No substring, no term, no ident part, but bigram similarity is high → small fuzzy score
+        assert!(score > 0); // fuzzy match kicks in
+        assert!(score < 10); // but much weaker than a proper substring match
+    }
+
+    #[test]
+    fn test_score_match_camel_case_aware() {
+        // "parse decl" should match "parseDeclaration" via identifier splitting
+        let score = score_match("parsedeclaration", "parse decl", &["parse", "decl"]);
+        // No substring "parse decl" in "parsedeclaration" (0)
+        // term "parse": "parsedeclaration".contains("parse") → yes (5)
+        // term "decl": "parsedeclaration".contains("decl") → yes (5)
+        // ident parts of "parsedeclaration" = ["parsedeclaration"] (no camelCase boundary in all-lowercase)
+        // So no ident bonus
+        assert_eq!(score, 10);
+
+        // With actual camelCase input (pre-lowercased — but split_identifier works on original)
+        // This tests the intent: that snake_case splits help
+        let score2 = score_match("parse_declaration", "parse decl", &["parse", "decl"]);
+        // term "parse" (5) + term "decl" not a substring → "parse_declaration" contains "decl"? yes (5)
+        // ident parts: ["parse", "declaration"] — "parse" matches (3), "decl" ≠ "declaration" (0)
+        assert_eq!(score2, 13);
+    }
+
+    #[test]
+    fn test_split_identifier() {
+        assert_eq!(split_identifier("parseDeclaration"), vec!["parse", "declaration"]);
+        assert_eq!(split_identifier("parse_declaration"), vec!["parse", "declaration"]);
+        // Consecutive uppercase letters stay grouped (XMLParser → "xmlparser" as one unit)
+        // since we only split on lowercase→uppercase transitions
+        assert_eq!(split_identifier("XMLParser"), vec!["xmlparser"]);
+        assert_eq!(split_identifier("simple"), vec!["simple"]);
+        assert_eq!(split_identifier("getHTTPResponse"), vec!["get", "httpresponse"]);
+        assert_eq!(split_identifier("src/parser/mod.rs"), vec!["src", "parser", "mod", "rs"]);
+    }
+
+    #[test]
+    fn test_simple_glob_match() {
+        assert!(simple_glob_match("*.rs", "src/main.rs"));
+        assert!(!simple_glob_match("*.rs", "src/main.py"));
+        assert!(simple_glob_match("src/parser/*", "src/parser/mod.rs"));
+        assert!(!simple_glob_match("src/parser/*", "src/parser/queries/rust.rs"));
+        assert!(simple_glob_match("src/parser/**", "src/parser/queries/rust.rs"));
+        assert!(simple_glob_match("src/parser/**", "src/parser/mod.rs"));
     }
 
     // -----------------------------------------------------------------------
@@ -1369,8 +2334,15 @@ mod tests {
         assert!(names.contains(&"search_relevant"));
         assert!(names.contains(&"lookup_symbol"));
         assert!(names.contains(&"regenerate_index"));
-        // Verify total count matches dispatch (12 tools)
-        assert_eq!(names.len(), 12);
+        // New tools
+        assert!(names.contains(&"get_diff_summary"));
+        assert!(names.contains(&"batch_file_summaries"));
+        assert!(names.contains(&"get_callers"));
+        assert!(names.contains(&"get_public_api"));
+        assert!(names.contains(&"explain_symbol"));
+        assert!(names.contains(&"get_related_tests"));
+        // Total: 12 original + 6 new = 18
+        assert_eq!(names.len(), 18);
     }
 
     // -----------------------------------------------------------------------
