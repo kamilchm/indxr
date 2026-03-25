@@ -132,7 +132,7 @@ pub enum Command {
         watch: bool,
 
         /// Debounce timeout in milliseconds (requires --watch)
-        #[arg(long, default_value = "300")]
+        #[arg(long, default_value = "300", requires = "watch")]
         debounce_ms: u64,
     },
 

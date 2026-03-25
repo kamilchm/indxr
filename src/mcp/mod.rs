@@ -138,6 +138,60 @@ enum ServerEvent {
 }
 
 // ---------------------------------------------------------------------------
+// Stdin line handler (extracted so it can be called from deferred-event replay)
+// ---------------------------------------------------------------------------
+
+fn handle_stdin_line(
+    line: &str,
+    index: &mut CodebaseIndex,
+    config: &IndexConfig,
+    registry: &ParserRegistry,
+    writer: &mut impl Write,
+) -> anyhow::Result<()> {
+    let line = line.trim();
+    if line.is_empty() {
+        return Ok(());
+    }
+
+    eprintln!("< {}", line);
+
+    let request: JsonRpcRequest = match serde_json::from_str(line) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Failed to parse JSON-RPC request: {}", e);
+            let resp = err_response(Value::Null, -32700, format!("Parse error: {}", e));
+            let out = serde_json::to_string(&resp)?;
+            eprintln!("> {}", out);
+            writeln!(writer, "{}", out)?;
+            writer.flush()?;
+            return Ok(());
+        }
+    };
+
+    // Notifications have no id and require no response.
+    if request.id.is_none() {
+        eprintln!("Notification: {}", request.method);
+        return Ok(());
+    }
+
+    let id = request.id.unwrap();
+    let params = request.params.unwrap_or(json!({}));
+
+    let response = match request.method.as_str() {
+        "initialize" => handle_initialize(id),
+        "tools/list" => handle_tools_list(id),
+        "tools/call" => handle_tools_call(id, index, config, registry, &params),
+        _ => err_response(id, -32601, format!("Method not found: {}", request.method)),
+    };
+
+    let out = serde_json::to_string(&response)?;
+    eprintln!("> {}", out);
+    writeln!(writer, "{}", out)?;
+    writer.flush()?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Main server loop
 // ---------------------------------------------------------------------------
 
@@ -202,8 +256,19 @@ pub fn run_mcp_server(
             ServerEvent::StdinClosed => break,
             ServerEvent::FileChanged => {
                 // Coalesce: drain any additional queued FileChanged events so we
-                // re-index only once per burst and don't block stdin processing.
-                while let Ok(ServerEvent::FileChanged) = rx.try_recv() {}
+                // re-index only once per burst. Preserve non-FileChanged events
+                // so stdin messages are never lost.
+                let mut deferred = Vec::new();
+                loop {
+                    match rx.try_recv() {
+                        Ok(ServerEvent::FileChanged) => continue,
+                        Ok(other) => {
+                            deferred.push(other);
+                            break;
+                        }
+                        Err(_) => break,
+                    }
+                }
 
                 eprintln!("File change detected, auto-reindexing...");
                 match indexer::regenerate_index_file(&config) {
@@ -215,52 +280,131 @@ pub fn run_mcp_server(
                         eprintln!("Auto-reindex failed: {}", e);
                     }
                 }
+
+                // Re-process any non-FileChanged events that were drained
+                for evt in deferred {
+                    match evt {
+                        ServerEvent::StdinClosed => {
+                            eprintln!("indxr MCP server shutting down");
+                            return Ok(());
+                        }
+                        ServerEvent::StdinLine(line) => {
+                            handle_stdin_line(&line, &mut index, &config, &registry, &mut writer)?;
+                        }
+                        ServerEvent::FileChanged => unreachable!(),
+                    }
+                }
             }
             ServerEvent::StdinLine(line) => {
-                let line = line.trim().to_string();
-                if line.is_empty() {
-                    continue;
-                }
-
-                eprintln!("< {}", line);
-
-                let request: JsonRpcRequest = match serde_json::from_str(&line) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        eprintln!("Failed to parse JSON-RPC request: {}", e);
-                        let resp = err_response(Value::Null, -32700, format!("Parse error: {}", e));
-                        let out = serde_json::to_string(&resp)?;
-                        eprintln!("> {}", out);
-                        writeln!(writer, "{}", out)?;
-                        writer.flush()?;
-                        continue;
-                    }
-                };
-
-                // Notifications have no id and require no response.
-                if request.id.is_none() {
-                    eprintln!("Notification: {}", request.method);
-                    continue;
-                }
-
-                let id = request.id.unwrap();
-                let params = request.params.unwrap_or(json!({}));
-
-                let response = match request.method.as_str() {
-                    "initialize" => handle_initialize(id),
-                    "tools/list" => handle_tools_list(id),
-                    "tools/call" => handle_tools_call(id, &mut index, &config, &registry, &params),
-                    _ => err_response(id, -32601, format!("Method not found: {}", request.method)),
-                };
-
-                let out = serde_json::to_string(&response)?;
-                eprintln!("> {}", out);
-                writeln!(writer, "{}", out)?;
-                writer.flush()?;
+                handle_stdin_line(&line, &mut index, &config, &registry, &mut writer)?;
             }
         }
     }
 
     eprintln!("indxr MCP server shutting down");
     Ok(())
+}
+
+#[cfg(test)]
+mod coalesce_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    /// Reproduces the scenario where a StdinLine arrives between FileChanged
+    /// events. The coalescing logic must preserve it.
+    #[test]
+    fn coalesce_preserves_stdin_events() {
+        let (tx, rx) = mpsc::channel::<ServerEvent>();
+
+        // Simulate: FileChanged, FileChanged, StdinLine, FileChanged
+        tx.send(ServerEvent::FileChanged).unwrap();
+        tx.send(ServerEvent::FileChanged).unwrap();
+        tx.send(ServerEvent::StdinLine("hello".into())).unwrap();
+        tx.send(ServerEvent::FileChanged).unwrap();
+        tx.send(ServerEvent::StdinClosed).unwrap();
+        drop(tx);
+
+        let mut collected = Vec::new();
+        while let Ok(event) = rx.recv() {
+            match event {
+                ServerEvent::FileChanged => {
+                    let mut deferred = Vec::new();
+                    loop {
+                        match rx.try_recv() {
+                            Ok(ServerEvent::FileChanged) => continue,
+                            Ok(other) => {
+                                deferred.push(other);
+                                break;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    collected.push("reindex".to_string());
+                    for evt in deferred {
+                        match evt {
+                            ServerEvent::StdinClosed => collected.push("closed".into()),
+                            ServerEvent::StdinLine(l) => collected.push(format!("stdin:{l}")),
+                            ServerEvent::FileChanged => unreachable!(),
+                        }
+                    }
+                }
+                ServerEvent::StdinLine(l) => collected.push(format!("stdin:{l}")),
+                ServerEvent::StdinClosed => collected.push("closed".into()),
+            }
+        }
+
+        // The critical invariant: StdinLine must not be lost during coalescing
+        assert!(
+            collected.contains(&"stdin:hello".to_string()),
+            "StdinLine must not be lost during coalescing. Got: {:?}",
+            collected
+        );
+        // Adjacent FileChanged events coalesce, but the one after StdinLine is separate
+        // Expect: ["reindex", "stdin:hello", "reindex", "closed"]
+        assert_eq!(
+            collected.iter().filter(|e| *e == "reindex").count(),
+            2,
+            "Expect 2 reindexes: first coalesces the adjacent pair, second for the post-stdin one. Got: {:?}",
+            collected
+        );
+    }
+
+    /// StdinClosed during coalescing must also be preserved.
+    #[test]
+    fn coalesce_preserves_stdin_closed() {
+        let (tx, rx) = mpsc::channel::<ServerEvent>();
+
+        tx.send(ServerEvent::FileChanged).unwrap();
+        tx.send(ServerEvent::FileChanged).unwrap();
+        tx.send(ServerEvent::StdinClosed).unwrap();
+        drop(tx);
+
+        let mut saw_closed = false;
+        while let Ok(event) = rx.recv() {
+            match event {
+                ServerEvent::FileChanged => {
+                    let mut deferred = Vec::new();
+                    loop {
+                        match rx.try_recv() {
+                            Ok(ServerEvent::FileChanged) => continue,
+                            Ok(other) => {
+                                deferred.push(other);
+                                break;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    for evt in deferred {
+                        if matches!(evt, ServerEvent::StdinClosed) {
+                            saw_closed = true;
+                        }
+                    }
+                }
+                ServerEvent::StdinClosed => saw_closed = true,
+                _ => {}
+            }
+        }
+
+        assert!(saw_closed, "StdinClosed must not be lost during coalescing");
+    }
 }
