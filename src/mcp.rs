@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
@@ -753,11 +753,9 @@ fn tool_lookup_symbol(index: &CodebaseIndex, args: &Value) -> Value {
 
     let total = results.len();
     let truncated = total >= limit;
-    let compact = args.get("compact").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    let mut result = if compact {
-        let items: Vec<Value> = results.iter().map(|s| serde_json::to_value(s).unwrap_or(Value::Null)).collect();
-        let mut r = to_compact_rows(&["file", "kind", "name", "signature", "line"], &items);
+    let mut result = if is_compact(args) {
+        let mut r = serialize_compact(&results, &["file", "kind", "name", "signature", "line"]);
         r["matches"] = json!(total);
         r
     } else {
@@ -789,7 +787,7 @@ fn tool_list_declarations(index: &CodebaseIndex, args: &Value) -> Value {
         .get("shallow")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let compact = args.get("compact").and_then(|v| v.as_bool()).unwrap_or(false);
+    let compact = is_compact(args);
 
     let kind_filter = args
         .get("kind")
@@ -807,11 +805,10 @@ fn tool_list_declarations(index: &CodebaseIndex, args: &Value) -> Value {
             file.declarations.iter().map(to_shallow).collect()
         };
         if compact {
-            let items: Vec<Value> = decls.iter().map(|d| serde_json::to_value(d).unwrap_or(Value::Null)).collect();
             return tool_result(json!({
                 "file": path,
                 "count": decls.len(),
-                "declarations": to_compact_rows(&["kind", "name", "signature", "line"], &items)
+                "declarations": serialize_compact(&decls, &["kind", "name", "signature", "line"])
             }));
         }
         tool_result(json!({
@@ -868,11 +865,9 @@ fn tool_search_signatures(index: &CodebaseIndex, args: &Value) -> Value {
 
     let total = results.len();
     let truncated = total >= limit;
-    let compact = args.get("compact").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    let mut result = if compact {
-        let items: Vec<Value> = results.iter().map(|s| serde_json::to_value(s).unwrap_or(Value::Null)).collect();
-        let mut r = to_compact_rows(&["file", "kind", "name", "signature", "line"], &items);
+    let mut result = if is_compact(args) {
+        let mut r = serialize_compact(&results, &["file", "kind", "name", "signature", "line"]);
         r["matches"] = json!(total);
         r
     } else {
@@ -1400,14 +1395,12 @@ fn tool_search_relevant(index: &CodebaseIndex, args: &Value) -> Value {
     results.truncate(limit);
 
     let total = results.len();
-    let compact = args.get("compact").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    if compact {
-        let items: Vec<Value> = results.iter().map(|r| serde_json::to_value(r).unwrap_or(Value::Null)).collect();
+    if is_compact(args) {
         return tool_result(json!({
             "query": query,
             "matches": total,
-            "results": to_compact_rows(&["file", "symbol", "kind", "signature", "line", "score"], &items)
+            "results": serialize_compact(&results, &["file", "symbol", "kind", "signature", "line", "score"])
         }));
     }
 
@@ -1539,6 +1532,17 @@ fn simple_glob_match(pattern: &str, path: &str) -> bool {
         return path.ends_with(ext);
     }
 
+    // Handle "**/*.ext" or "**/name" — recursive match on suffix
+    if let Some(rest) = pattern.strip_prefix("**/") {
+        if rest.starts_with("*.") && !rest.contains('/') {
+            // "**/*.rs" → match any file ending in ".rs"
+            let ext = &rest[1..];
+            return path.ends_with(ext);
+        }
+        // "**/foo.rs" → match any path ending with "/foo.rs" or equal to "foo.rs"
+        return path == rest || path.ends_with(&format!("/{}", rest));
+    }
+
     // Handle "dir/**" or "dir/*" — prefix match
     if let Some(prefix) = pattern.strip_suffix("/**") {
         return path.starts_with(prefix) || path.starts_with(&format!("{}/", prefix));
@@ -1572,8 +1576,14 @@ fn split_identifier(name: &str) -> Vec<String> {
                 parts.push(current.to_lowercase());
                 current.clear();
             }
-        } else if ch.is_uppercase() && !current.is_empty() && current.chars().last().is_some_and(|c| c.is_lowercase()) {
-            // camelCase boundary
+        } else if ch.is_uppercase()
+            && !current.is_empty()
+            && current
+                .as_bytes()
+                .last()
+                .is_some_and(|&b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        {
+            // camelCase boundary (lowercase→uppercase) or digit→uppercase (e.g. "v2Parser")
             parts.push(current.to_lowercase());
             current.clear();
             current.push(ch);
@@ -1588,22 +1598,34 @@ fn split_identifier(name: &str) -> Vec<String> {
 }
 
 /// Bigram (Dice coefficient) similarity between two strings.
+/// Uses set-based intersection to avoid inflating scores for repeated character pairs.
 fn bigram_similarity(a: &str, b: &str) -> f64 {
     if a.len() < 2 || b.len() < 2 {
         return 0.0;
     }
-    let bigrams_a: Vec<(char, char)> = a.chars().zip(a.chars().skip(1)).collect();
-    let bigrams_b: Vec<(char, char)> = b.chars().zip(b.chars().skip(1)).collect();
-    let intersection = bigrams_a.iter().filter(|bg| bigrams_b.contains(bg)).count();
+    let bigrams_a: HashSet<(char, char)> = a.chars().zip(a.chars().skip(1)).collect();
+    let bigrams_b: HashSet<(char, char)> = b.chars().zip(b.chars().skip(1)).collect();
+    let intersection = bigrams_a.intersection(&bigrams_b).count();
     (2.0 * intersection as f64) / (bigrams_a.len() + bigrams_b.len()) as f64
 }
 
 /// Collapse nested block bodies (depth >= 2) to `{ ... }`.
+///
+/// State machine with these modes:
+///   - Normal: track brace depth, emit chars. At depth >= 2 on `{`, emit `{ ... }` and
+///     enter Skip mode until the matching `}` is found.
+///   - Skip (skip_until_close): consume chars without emitting, tracking depth to find
+///     the matching close brace.
+///   - LineComment: pass through until `\n`.
+///   - BlockComment: pass through until `*/`.
+///   - String: pass through until unescaped closing quote (tracks escape state properly
+///     so `"\\\\"` is handled as two escaped backslashes followed by an end-quote).
 fn collapse_nested_bodies(source: &str) -> String {
     let mut result = String::with_capacity(source.len());
     let mut depth: i32 = 0;
     let mut in_string = false;
     let mut string_char = '"';
+    let mut escaped = false; // tracks backslash escaping inside strings
     let mut in_line_comment = false;
     let mut in_block_comment = false;
     let mut prev_char = '\0';
@@ -1611,9 +1633,11 @@ fn collapse_nested_bodies(source: &str) -> String {
     let mut collapse_depth: i32 = 0;
 
     for ch in source.chars() {
-        // Handle line comments
+        // --- Line comment mode: pass through until newline ---
         if in_line_comment {
-            result.push(ch);
+            if !skip_until_close {
+                result.push(ch);
+            }
             if ch == '\n' {
                 in_line_comment = false;
             }
@@ -1621,7 +1645,7 @@ fn collapse_nested_bodies(source: &str) -> String {
             continue;
         }
 
-        // Handle block comments
+        // --- Block comment mode: pass through until */ ---
         if in_block_comment {
             if !skip_until_close {
                 result.push(ch);
@@ -1633,25 +1657,32 @@ fn collapse_nested_bodies(source: &str) -> String {
             continue;
         }
 
-        // Handle strings
+        // --- String mode: pass through until unescaped closing quote ---
         if in_string {
             if !skip_until_close {
                 result.push(ch);
             }
-            if ch == string_char && prev_char != '\\' {
+            if ch == string_char && !escaped {
                 in_string = false;
             }
+            // Track escape state: `\` flips it on, `\\` flips it back off
+            escaped = ch == '\\' && !escaped;
             prev_char = ch;
             continue;
         }
 
-        // Detect comment/string starts
+        // --- Normal mode: detect comment/string starts, track braces ---
+
+        // Detect line comment start: //
         if prev_char == '/' && ch == '/' {
             in_line_comment = true;
-            result.push(ch);
+            if !skip_until_close {
+                result.push(ch);
+            }
             prev_char = ch;
             continue;
         }
+        // Detect block comment start: /*
         if prev_char == '/' && ch == '*' {
             in_block_comment = true;
             if !skip_until_close {
@@ -1660,8 +1691,10 @@ fn collapse_nested_bodies(source: &str) -> String {
             prev_char = ch;
             continue;
         }
+        // Detect string start
         if ch == '"' || ch == '\'' {
             in_string = true;
+            escaped = false;
             string_char = ch;
             if !skip_until_close {
                 result.push(ch);
@@ -1695,6 +1728,20 @@ fn collapse_nested_bodies(source: &str) -> String {
     result
 }
 
+/// Check if the caller requested compact columnar output.
+fn is_compact(args: &Value) -> bool {
+    args.get("compact").and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
+/// Serialize a slice of Serialize items into compact columnar format.
+fn serialize_compact<T: Serialize>(items: &[T], columns: &[&str]) -> Value {
+    let values: Vec<Value> = items
+        .iter()
+        .map(|s| serde_json::to_value(s).unwrap_or(Value::Null))
+        .collect();
+    to_compact_rows(columns, &values)
+}
+
 /// Convert an array of objects to compact columnar format.
 fn to_compact_rows(columns: &[&str], items: &[Value]) -> Value {
     let rows: Vec<Value> = items
@@ -1711,6 +1758,39 @@ fn to_compact_rows(columns: &[&str], items: &[Value]) -> Value {
         "columns": columns,
         "rows": rows
     })
+}
+
+/// Check if `text` contains `word` at a word boundary (not part of a larger identifier).
+/// Word boundaries are non-alphanumeric, non-underscore characters or string edges.
+fn contains_word_boundary(text: &str, word: &str) -> bool {
+    if word.is_empty() {
+        return false;
+    }
+    let text_bytes = text.as_bytes();
+    let word_len = word.len();
+    let mut start = 0;
+    while start + word_len <= text.len() {
+        match text[start..].find(word) {
+            Some(pos) => {
+                let abs_pos = start + pos;
+                let before_ok = abs_pos == 0 || {
+                    let b = text_bytes[abs_pos - 1];
+                    !b.is_ascii_alphanumeric() && b != b'_'
+                };
+                let after_pos = abs_pos + word_len;
+                let after_ok = after_pos >= text.len() || {
+                    let b = text_bytes[after_pos];
+                    !b.is_ascii_alphanumeric() && b != b'_'
+                };
+                if before_ok && after_ok {
+                    return true;
+                }
+                start = abs_pos + 1;
+            }
+            None => break,
+        }
+    }
+    false
 }
 
 /// Collect public declarations recursively.
@@ -1804,7 +1884,12 @@ fn explain_decl(decl: &Declaration, file_path: &str) -> Value {
 // New tool implementations (Phase 1-5)
 // ---------------------------------------------------------------------------
 
-fn tool_get_diff_summary(index: &CodebaseIndex, config: &IndexConfig, args: &Value) -> Value {
+fn tool_get_diff_summary(
+    index: &CodebaseIndex,
+    config: &IndexConfig,
+    registry: &ParserRegistry,
+    args: &Value,
+) -> Value {
     let since_ref = match args.get("since_ref").and_then(|v| v.as_str()) {
         Some(r) => r,
         None => return tool_error("Missing required parameter: since_ref"),
@@ -1825,8 +1910,7 @@ fn tool_get_diff_summary(index: &CodebaseIndex, config: &IndexConfig, args: &Val
         }));
     }
 
-    // Parse old file versions
-    let registry = ParserRegistry::new();
+    // Parse old file versions using cached registry
     let mut old_files: HashMap<PathBuf, FileIndex> = HashMap::new();
     for path in &changed_paths {
         if let Ok(Some(old_content)) = diff::get_file_at_ref(&config.root, path, since_ref) {
@@ -1909,7 +1993,9 @@ fn tool_get_callers(index: &CodebaseIndex, args: &Value) -> Value {
         refs: &mut Vec<Value>,
     ) {
         for decl in decls {
-            if decl.name != symbol && decl.signature.contains(symbol) {
+            // Use word-boundary matching to avoid false positives
+            // (e.g., searching for "get" shouldn't match "budget" or "widget")
+            if decl.name != symbol && contains_word_boundary(&decl.signature, symbol) {
                 refs.push(json!({
                     "file": file_path,
                     "name": decl.name,
@@ -1925,9 +2011,9 @@ fn tool_get_callers(index: &CodebaseIndex, args: &Value) -> Value {
     for file in &index.files {
         let file_path = file.path.to_string_lossy().to_string();
 
-        // Check imports
+        // Check imports (word boundary matching)
         for imp in &file.imports {
-            if imp.text.contains(symbol) {
+            if contains_word_boundary(&imp.text, symbol) {
                 references.push(json!({
                     "file": &file_path,
                     "match_type": "import",
@@ -1986,8 +2072,8 @@ fn tool_explain_symbol(index: &CodebaseIndex, args: &Value) -> Value {
     };
     let name_lower = name.to_lowercase();
 
-    fn find_matching_decls<'a>(
-        decls: &'a [Declaration],
+    fn find_matching_decls(
+        decls: &[Declaration],
         name_lower: &str,
         file_path: &str,
         results: &mut Vec<Value>,
@@ -2118,6 +2204,7 @@ fn handle_tools_call(
     id: Value,
     index: &mut CodebaseIndex,
     config: &IndexConfig,
+    registry: &ParserRegistry,
     params: &Value,
 ) -> JsonRpcResponse {
     let tool_name = match params.get("name").and_then(|v| v.as_str()) {
@@ -2135,7 +2222,7 @@ fn handle_tools_call(
     }
 
     if tool_name == "get_diff_summary" {
-        let result = tool_get_diff_summary(index, config, &arguments);
+        let result = tool_get_diff_summary(index, config, registry, &arguments);
         return ok_response(id, result);
     }
 
@@ -2149,6 +2236,7 @@ fn handle_tools_call(
 
 pub fn run_mcp_server(mut index: CodebaseIndex, config: IndexConfig) -> anyhow::Result<()> {
     eprintln!("indxr MCP server starting (root: {})", index.root.display());
+    let registry = ParserRegistry::new();
 
     let stdin = io::stdin();
     let stdout = io::stdout();
@@ -2196,7 +2284,7 @@ pub fn run_mcp_server(mut index: CodebaseIndex, config: IndexConfig) -> anyhow::
         let response = match request.method.as_str() {
             "initialize" => handle_initialize(id),
             "tools/list" => handle_tools_list(id),
-            "tools/call" => handle_tools_call(id, &mut index, &config, &params),
+            "tools/call" => handle_tools_call(id, &mut index, &config, &registry, &params),
             _ => err_response(id, -32601, format!("Method not found: {}", request.method)),
         };
 
@@ -2306,6 +2394,9 @@ mod tests {
         assert_eq!(split_identifier("simple"), vec!["simple"]);
         assert_eq!(split_identifier("getHTTPResponse"), vec!["get", "httpresponse"]);
         assert_eq!(split_identifier("src/parser/mod.rs"), vec!["src", "parser", "mod", "rs"]);
+        // Digit→uppercase boundary
+        assert_eq!(split_identifier("v2Parser"), vec!["v2", "parser"]);
+        assert_eq!(split_identifier("item3DView"), vec!["item3", "dview"]);
     }
 
     #[test]
@@ -2316,6 +2407,13 @@ mod tests {
         assert!(!simple_glob_match("src/parser/*", "src/parser/queries/rust.rs"));
         assert!(simple_glob_match("src/parser/**", "src/parser/queries/rust.rs"));
         assert!(simple_glob_match("src/parser/**", "src/parser/mod.rs"));
+        // Recursive glob with extension
+        assert!(simple_glob_match("**/*.rs", "src/main.rs"));
+        assert!(simple_glob_match("**/*.rs", "src/parser/mod.rs"));
+        assert!(!simple_glob_match("**/*.rs", "src/main.py"));
+        // Recursive glob with filename
+        assert!(simple_glob_match("**/mod.rs", "src/parser/mod.rs"));
+        assert!(!simple_glob_match("**/mod.rs", "src/parser/lib.rs"));
     }
 
     // -----------------------------------------------------------------------
@@ -2383,5 +2481,197 @@ mod tests {
         assert!(sig_score > 0);
         // Both match, but name multiplier is higher
         assert!(name_score > sig_score || name_score == sig_score);
+    }
+
+    // -----------------------------------------------------------------------
+    // collapse_nested_bodies tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_collapse_simple_nested() {
+        let input = "fn foo() {\n    if x {\n        bar();\n    }\n}";
+        let result = collapse_nested_bodies(input);
+        // The inner `if` block at depth 2 should be collapsed
+        assert!(result.contains("{ ... }"));
+        // The outer fn brace should remain
+        assert!(result.contains("fn foo() {"));
+        assert!(result.contains("}"));
+        // The inner bar() call should NOT appear
+        assert!(!result.contains("bar()"));
+    }
+
+    #[test]
+    fn test_collapse_string_with_braces() {
+        let input = r#"fn foo() {
+    let s = "{ not a block }";
+    if x {
+        bar();
+    }
+}"#;
+        let result = collapse_nested_bodies(input);
+        // String braces should not affect depth tracking
+        assert!(result.contains(r#""{ not a block }""#));
+        // The if block should be collapsed
+        assert!(result.contains("{ ... }"));
+        assert!(!result.contains("bar()"));
+    }
+
+    #[test]
+    fn test_collapse_escaped_quotes() {
+        // Test that escaped quotes (including double escapes) are handled
+        let input = r#"fn foo() {
+    let s = "hello \"world\"";
+    let t = "path\\";
+    if x {
+        inner();
+    }
+}"#;
+        let result = collapse_nested_bodies(input);
+        // Should not get confused by escaped quotes
+        assert!(result.contains("{ ... }"));
+        assert!(!result.contains("inner()"));
+    }
+
+    #[test]
+    fn test_collapse_block_comment_with_braces() {
+        let input = "fn foo() {\n    /* { nested } */\n    if x {\n        bar();\n    }\n}";
+        let result = collapse_nested_bodies(input);
+        // Block comment braces should be ignored
+        assert!(result.contains("/* { nested } */"));
+        assert!(result.contains("{ ... }"));
+    }
+
+    #[test]
+    fn test_collapse_line_comment_with_braces() {
+        let input = "fn foo() {\n    // { not a block }\n    if x {\n        bar();\n    }\n}";
+        let result = collapse_nested_bodies(input);
+        // Line comment braces should be ignored
+        assert!(result.contains("// { not a block }"));
+        assert!(result.contains("{ ... }"));
+    }
+
+    #[test]
+    fn test_collapse_empty_input() {
+        assert_eq!(collapse_nested_bodies(""), "");
+    }
+
+    #[test]
+    fn test_collapse_no_nesting() {
+        let input = "fn foo() { bar(); }";
+        let result = collapse_nested_bodies(input);
+        // Only depth 1, nothing to collapse
+        assert_eq!(result, input);
+    }
+
+    // -----------------------------------------------------------------------
+    // bigram_similarity tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_bigram_identical() {
+        let sim = bigram_similarity("parser", "parser");
+        assert!((sim - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_bigram_completely_different() {
+        let sim = bigram_similarity("abc", "xyz");
+        assert_eq!(sim, 0.0);
+    }
+
+    #[test]
+    fn test_bigram_partial_overlap() {
+        // "parse" vs "parser" — substantial overlap but not identical
+        let sim = bigram_similarity("parse", "parser");
+        assert!(sim > 0.3);
+        assert!(sim < 1.0);
+    }
+
+    #[test]
+    fn test_bigram_short_strings() {
+        // Single char strings should return 0
+        assert_eq!(bigram_similarity("a", "a"), 0.0);
+        assert_eq!(bigram_similarity("", "abc"), 0.0);
+    }
+
+    #[test]
+    fn test_bigram_no_duplicate_inflation() {
+        // "aaa" has bigrams {(a,a)} as a set (size 1)
+        // "aab" has bigrams {(a,a), (a,b)} as a set (size 2)
+        // intersection = 1, dice = 2*1 / (1+2) = 0.666...
+        let sim = bigram_similarity("aaa", "aab");
+        let expected = 2.0 / 3.0;
+        assert!((sim - expected).abs() < f64::EPSILON);
+    }
+
+    // -----------------------------------------------------------------------
+    // to_compact_rows tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_compact_rows_basic() {
+        let items = vec![
+            json!({"name": "foo", "kind": "fn", "line": 10}),
+            json!({"name": "bar", "kind": "struct", "line": 20}),
+        ];
+        let result = to_compact_rows(&["name", "kind", "line"], &items);
+        let columns = result["columns"].as_array().unwrap();
+        assert_eq!(columns.len(), 3);
+        assert_eq!(columns[0], "name");
+        let rows = result["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][0], "foo");
+        assert_eq!(rows[0][1], "fn");
+        assert_eq!(rows[0][2], 10);
+        assert_eq!(rows[1][0], "bar");
+    }
+
+    #[test]
+    fn test_compact_rows_missing_column() {
+        let items = vec![json!({"name": "foo"})];
+        let result = to_compact_rows(&["name", "missing"], &items);
+        let rows = result["rows"].as_array().unwrap();
+        assert_eq!(rows[0][0], "foo");
+        assert!(rows[0][1].is_null());
+    }
+
+    // -----------------------------------------------------------------------
+    // contains_word_boundary tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_word_boundary_basic() {
+        assert!(contains_word_boundary("fn get(x: i32)", "get"));
+        assert!(!contains_word_boundary("fn budget(x: i32)", "get"));
+        assert!(!contains_word_boundary("fn widget(x: i32)", "get"));
+    }
+
+    #[test]
+    fn test_word_boundary_at_edges() {
+        // Underscore is an identifier char, so get in get_value is NOT a word boundary
+        assert!(!contains_word_boundary("get_value", "get"));
+        assert!(!contains_word_boundary("value_get", "get"));
+        // Exact match is a word boundary
+        assert!(contains_word_boundary("get", "get"));
+        // Punctuation/space boundaries work
+        assert!(contains_word_boundary("(get)", "get"));
+        assert!(contains_word_boundary("x: get, y", "get"));
+    }
+
+    #[test]
+    fn test_word_boundary_not_partial() {
+        assert!(!contains_word_boundary("getting", "get"));
+        assert!(!contains_word_boundary("target", "get"));
+    }
+
+    #[test]
+    fn test_word_boundary_with_generics() {
+        assert!(contains_word_boundary("HashMap<String, Value>", "HashMap"));
+        assert!(contains_word_boundary("Result<Cache>", "Cache"));
+    }
+
+    #[test]
+    fn test_word_boundary_empty() {
+        assert!(!contains_word_boundary("anything", ""));
     }
 }
