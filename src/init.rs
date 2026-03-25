@@ -39,10 +39,7 @@ pub fn run_init(opts: InitOptions) -> Result<()> {
     .flatten()
     .collect();
 
-    eprintln!(
-        "indxr init: setting up for {}",
-        agents.join(", ")
-    );
+    eprintln!("indxr init: setting up for {}", agents.join(", "));
     eprintln!();
 
     let mut results = Vec::new();
@@ -70,11 +67,7 @@ pub fn run_init(opts: InitOptions) -> Result<()> {
                 eprintln!("  Created  {}", display_relative(path, &root));
             }
             WriteResult::Skipped(path, reason) => {
-                eprintln!(
-                    "  Skipped  {} ({})",
-                    display_relative(path, &root),
-                    reason
-                );
+                eprintln!("  Skipped  {} ({})", display_relative(path, &root), reason);
             }
             WriteResult::Appended(path) => {
                 eprintln!("  Appended {}", display_relative(path, &root));
@@ -132,32 +125,22 @@ fn setup_claude(root: &Path, force: bool, include_hooks: bool) -> Result<Vec<Wri
 }
 
 fn setup_cursor(root: &Path, force: bool) -> Result<Vec<WriteResult>> {
-    let mut results = Vec::new();
-    results.push(write_file_safe(
-        &root.join(".cursor/mcp.json"),
-        &mcp_json_content(),
-        force,
-    )?);
-    results.push(write_file_safe(
-        &root.join(".cursorrules"),
-        &cursorrules_content(),
-        force,
-    )?);
+    let results = vec![
+        write_file_safe(&root.join(".cursor/mcp.json"), &mcp_json_content(), force)?,
+        write_file_safe(&root.join(".cursorrules"), &cursorrules_content(), force)?,
+    ];
     Ok(results)
 }
 
 fn setup_windsurf(root: &Path, force: bool) -> Result<Vec<WriteResult>> {
-    let mut results = Vec::new();
-    results.push(write_file_safe(
-        &root.join(".windsurf/mcp.json"),
-        &mcp_json_content(),
-        force,
-    )?);
-    results.push(write_file_safe(
-        &root.join(".windsurfrules"),
-        &windsurfrules_content(),
-        force,
-    )?);
+    let results = vec![
+        write_file_safe(&root.join(".windsurf/mcp.json"), &mcp_json_content(), force)?,
+        write_file_safe(
+            &root.join(".windsurfrules"),
+            &windsurfrules_content(),
+            force,
+        )?,
+    ];
     Ok(results)
 }
 
@@ -468,7 +451,11 @@ mod tests {
     #[test]
     fn test_setup_gitignore_skips_if_present() {
         let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join(".gitignore"), "node_modules/\n.indxr-cache/\n").unwrap();
+        fs::write(
+            dir.path().join(".gitignore"),
+            "node_modules/\n.indxr-cache/\n",
+        )
+        .unwrap();
         let result = setup_gitignore(dir.path()).unwrap();
         assert!(matches!(result, WriteResult::Skipped(_, _)));
     }

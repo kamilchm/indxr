@@ -13,12 +13,12 @@
 # Requirements:
 #   - indxr binary (cargo build --release, or cargo install --path .)
 #   - jq (for JSON parsing)
-#   - Python 3 with tiktoken (pip install tiktoken) — for OpenAI token counts
-#   - Optional: ANTHROPIC_API_KEY env var + anthropic SDK — for Claude token counts
+#   - Python 3 with tiktoken >= 0.7 (pip install tiktoken) — for OpenAI token counts
+#   - Optional: ANTHROPIC_API_KEY env var + anthropic SDK >= 0.40 (pip install anthropic) — for Claude token counts
 #
 # Token counting:
-#   - OpenAI:  tiktoken o200k_base (GPT-4o tokenizer) — offline, exact
-#   - Claude:  Anthropic count_tokens API — requires ANTHROPIC_API_KEY, exact
+#   - OpenAI:  tiktoken o200k_base (GPT-4o/GPT-4.1/GPT-5/o3/o4-mini) — offline, exact
+#   - Claude:  Anthropic count_tokens API (claude-sonnet-4-6) — requires ANTHROPIC_API_KEY, exact
 #   - If tiktoken is not installed, falls back to ~4 chars/token estimate
 # =============================================================================
 
@@ -110,7 +110,7 @@ client = anthropic.Anthropic()
 with open(sys.argv[1], 'r', errors='replace') as f:
     text = f.read()
 resp = client.messages.count_tokens(
-    model='claude-sonnet-4-20250514',
+    model='claude-sonnet-4-6',
     messages=[{'role': 'user', 'content': text}],
 )
 print(resp.input_tokens)
@@ -581,7 +581,7 @@ printf "${DIM}indxr binary: %s${RESET}\n" "$INDXR"
 
 # Show tokenizer status
 if [ "$HAS_TIKTOKEN" = true ]; then
-    printf "${GREEN}OpenAI tokenizer: tiktoken o200k_base (GPT-4o) — exact${RESET}\n"
+    printf "${GREEN}OpenAI tokenizer: tiktoken o200k_base (GPT-4o/4.1/5/o3/o4-mini) — exact${RESET}\n"
 else
     printf "${YELLOW}OpenAI tokenizer: not available (install tiktoken) — using ~4 chars/token estimate${RESET}\n"
 fi
