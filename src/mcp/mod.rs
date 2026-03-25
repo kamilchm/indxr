@@ -228,14 +228,17 @@ pub fn run_mcp_server(
         let _ = stdin_tx.send(ServerEvent::StdinClosed);
     });
 
-    // Optionally spawn file watcher
+    // Optionally spawn file watcher — the guard must outlive the event loop
+    // so the OS-level file subscription stays active.
+    let mut _watch_guard: Option<crate::watch::WatchGuard> = None;
     if watch {
         let root = std::fs::canonicalize(&config.root)?;
         let output_path = root.join("INDEX.md");
         let cache_dir = std::fs::canonicalize(root.join(&config.cache_dir))
             .unwrap_or_else(|_| root.join(&config.cache_dir));
-        let (watch_rx, _watch_guard) =
+        let (watch_rx, guard) =
             crate::watch::spawn_watcher(&root, &cache_dir, &output_path, debounce_ms)?;
+        _watch_guard = Some(guard);
 
         let watch_tx = tx.clone();
         thread::spawn(move || {
@@ -248,6 +251,10 @@ pub fn run_mcp_server(
 
         eprintln!("File watcher enabled (debounce: {}ms)", debounce_ms);
     }
+
+    // Drop the original sender so the channel naturally closes when all
+    // thread-owned senders are dropped (stdin_tx, watch_tx).
+    drop(tx);
 
     let stdout = io::stdout();
     let mut writer = stdout.lock();

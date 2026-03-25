@@ -126,8 +126,12 @@ pub fn spawn_watcher(
 /// Determines if a path change should trigger re-indexing.
 /// Filters out: the output file itself, the cache directory, non-source files, and hidden files.
 fn should_trigger_reindex(path: &Path, root: &Path, output_path: &Path, cache_dir: &Path) -> bool {
-    // Ignore the output file (INDEX.md) to prevent self-triggering loops
-    if path == output_path {
+    // Ignore the output file (INDEX.md) to prevent self-triggering loops.
+    // Canonicalize the event path so symlinks / /private/var vs /var differences
+    // on macOS don't bypass this check.
+    let canonical = fs::canonicalize(path);
+    let check_path = canonical.as_deref().unwrap_or(path);
+    if check_path == output_path {
         return false;
     }
 
@@ -155,6 +159,7 @@ fn should_trigger_reindex(path: &Path, root: &Path, output_path: &Path, cache_di
 mod tests {
     use super::*;
     use std::path::Path;
+    use std::time::Duration;
 
     fn root() -> PathBuf {
         PathBuf::from("/project")
@@ -246,5 +251,30 @@ mod tests {
                 path
             );
         }
+    }
+
+    /// Verifies that `spawn_watcher` delivers events while the guard is alive,
+    /// and stops delivering after the guard is dropped.
+    #[test]
+    fn watcher_guard_lifetime() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let output_path = root.join("INDEX.md");
+        let cache_dir = root.join(".indxr-cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+
+        let (rx, guard) = spawn_watcher(&root, &cache_dir, &output_path, 100).unwrap();
+
+        // Write a source file — should trigger an event
+        fs::write(root.join("test.rs"), "fn main() {}").unwrap();
+        let got = rx.recv_timeout(Duration::from_secs(5));
+        assert!(got.is_ok(), "Expected event while guard is alive");
+
+        // Drop the guard — watcher should stop, channel should disconnect
+        drop(guard);
+        // Drain any in-flight events
+        while rx.try_recv().is_ok() {}
+        let got = rx.recv_timeout(Duration::from_secs(1));
+        assert!(got.is_err(), "Expected no events after guard is dropped");
     }
 }
