@@ -5,6 +5,7 @@ mod diff;
 mod error;
 mod filter;
 mod indexer;
+mod init;
 mod languages;
 mod mcp;
 mod model;
@@ -59,6 +60,39 @@ fn main() -> Result<()> {
             index.files.len()
         );
         return mcp::run_mcp_server(index, config);
+    }
+
+    // Handle init subcommand
+    if let Some(Command::Init {
+        path,
+        claude,
+        cursor,
+        windsurf,
+        all,
+        no_index,
+        no_hooks,
+        force,
+        max_file_size,
+    }) = &cli.command
+    {
+        let (claude, cursor, windsurf) = if *all || (!*claude && !*cursor && !*windsurf) {
+            (true, true, true)
+        } else {
+            (*claude, *cursor, *windsurf)
+        };
+
+        let opts = init::InitOptions {
+            path: path.clone(),
+            claude,
+            cursor,
+            windsurf,
+            generate_index: !no_index,
+            force: *force,
+            include_hooks: !no_hooks,
+            max_file_size: *max_file_size,
+        };
+
+        return init::run_init(opts);
     }
 
     // Normal indexing mode

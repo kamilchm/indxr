@@ -106,6 +106,13 @@ indxr --cache-dir /tmp/cache                 # custom cache location
 # MCP server
 indxr serve ./project                        # start MCP server (stdin/stdout JSON-RPC 2.0)
 
+# Agent setup
+indxr init                                   # set up all agent configs (.mcp.json, CLAUDE.md, etc.)
+indxr init --claude                          # Claude Code only
+indxr init --cursor --windsurf               # Cursor + Windsurf only
+indxr init --no-index --no-hooks             # config files only, no INDEX.md or hooks
+indxr init --force                           # overwrite existing files
+
 # Other
 indxr --max-depth 3                          # limit directory depth
 indxr --max-file-size 256                    # skip files > N KB
@@ -142,4 +149,5 @@ Key source files:
 - `src/parser/` — tree-sitter + regex parsers per language
 - `src/output/` — markdown/json/yaml formatters
 - `src/walker/` — directory traversal
+- `src/init.rs` — `indxr init` command (agent config scaffolding)
 - `src/cache/` — incremental binary caching

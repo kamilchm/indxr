@@ -10,6 +10,29 @@ indxr [OPTIONS] [PATH] [COMMAND]
 
 ## Commands
 
+### `init`
+
+Initialize indxr configuration files for AI agent integration. Creates MCP configs, agent instruction files, PreToolUse hooks, and an initial INDEX.md in one command.
+
+```bash
+indxr init [PATH] [OPTIONS]
+```
+
+**Options:**
+- `--claude` — Set up for Claude Code (`.mcp.json`, `CLAUDE.md`, `.claude/settings.json`)
+- `--cursor` — Set up for Cursor (`.cursor/mcp.json`, `.cursorrules`)
+- `--windsurf` — Set up for Windsurf (`.windsurf/mcp.json`, `.windsurfrules`)
+- `--all` — Set up for all supported agents (default when no agent flag is specified)
+- `--no-index` — Skip generating INDEX.md
+- `--no-hooks` — Skip PreToolUse hooks for Claude Code (`.claude/settings.json`)
+- `--force` — Overwrite existing files (default: skip with warning)
+- `--max-file-size <KB>` — Skip files larger than N KB when generating INDEX.md (default: 512)
+
+**Behavior:**
+- If no agent flag is specified, defaults to `--all`
+- Existing files are skipped with a warning unless `--force` is used
+- `.gitignore` is appended with `.indxr-cache/` if not already present (never overwritten)
+
 ### `serve`
 
 Start an MCP server for AI agent integration. See [MCP Server](mcp-server.md) for full details.
@@ -179,6 +202,31 @@ indxr --no-gitignore
 
 # Skip large files
 indxr --max-file-size 256
+```
+
+### Agent Setup
+
+```bash
+# Set up for all agents (Claude Code, Cursor, Windsurf)
+indxr init
+
+# Claude Code only
+indxr init --claude
+
+# Cursor and Windsurf only
+indxr init --cursor --windsurf
+
+# Config files only, skip INDEX.md generation
+indxr init --no-index
+
+# Skip PreToolUse hooks
+indxr init --claude --no-hooks
+
+# Overwrite existing files
+indxr init --force
+
+# Re-run after initial setup (skips existing files)
+indxr init
 ```
 
 ### Combining Options

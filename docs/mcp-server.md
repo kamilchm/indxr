@@ -428,9 +428,11 @@ Get structural changes (added/removed/modified declarations) since a git ref. Mu
 
 ## Configuration for AI Tools
 
+> **Tip:** `indxr init` can create all these configuration files automatically. See `indxr init --help` or the [Agent Integration Guide](agent-integration.md#quick-setup).
+
 ### Claude Code
 
-Add to `.mcp.json` in your project root:
+Add to `.mcp.json` in your project root (or run `indxr init --claude`):
 
 ```json
 {
@@ -467,7 +469,7 @@ claude mcp add indxr -- indxr serve .
 
 ### Cursor
 
-Add in Cursor's MCP server settings:
+Add in Cursor's MCP server settings (or run `indxr init --cursor`):
 
 ```json
 {
@@ -482,7 +484,7 @@ Add in Cursor's MCP server settings:
 
 ### Windsurf
 
-Add to Windsurf's MCP configuration:
+Add to Windsurf's MCP configuration (or run `indxr init --windsurf`):
 
 ```json
 {
