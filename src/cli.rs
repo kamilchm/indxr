@@ -103,6 +103,10 @@ pub struct Cli {
     #[arg(long, value_name = "FORMAT")]
     pub graph: Option<GraphFormat>,
 
+    /// Graph granularity: file-to-file imports or symbol-to-symbol relationships (default: file)
+    #[arg(long, requires = "graph", value_name = "LEVEL")]
+    pub graph_level: Option<GraphLevel>,
+
     /// Max edge hops from scoped files in --graph mode (default: unlimited)
     #[arg(long, requires = "graph")]
     pub graph_depth: Option<usize>,
@@ -222,4 +226,10 @@ pub enum GraphFormat {
     Dot,
     Mermaid,
     Json,
+}
+
+#[derive(Debug, Clone, clap::ValueEnum)]
+pub enum GraphLevel {
+    File,
+    Symbol,
 }

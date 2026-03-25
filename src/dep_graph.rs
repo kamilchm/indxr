@@ -158,7 +158,7 @@ fn resolve_import<'a>(
 }
 
 /// Normalize import separators: `::` → `/`, dots → `/` only between identifier segments.
-/// Preserves dots that look like file extensions (e.g., `.h`, `.rs`, `.py`).
+/// Preserves dots that look like file extensions (e.g., `.h`, `.rs`, `.py`, `.json`).
 fn normalize_import_separators(text: &str) -> String {
     // First replace `::` with `/`
     let after_colons = text.replace("::", "/");
@@ -167,22 +167,30 @@ fn normalize_import_separators(text: &str) -> String {
     let mut result = String::with_capacity(after_colons.len());
     for (byte_pos, c) in after_colons.char_indices() {
         if c == '.' {
-            // Check if this looks like a file extension: dot followed by 1-3 alnum chars at end or before non-alnum
             let rest = &after_colons[byte_pos + c.len_utf8()..];
             let ext_len = rest.chars().take_while(|c| c.is_alphanumeric()).count();
             let after_ext = rest.chars().nth(ext_len);
-            let is_extension = (1..=3).contains(&ext_len)
-                && (after_ext.is_none() || !after_ext.unwrap().is_alphanumeric());
 
-            // Preserve dot for file extensions: at end of string, or before a
-            // non-identifier char (quote, paren, whitespace) that signals the
-            // path has ended rather than continuing as a module separator.
+            // Before a delimiter (quote, paren, whitespace): the path has ended,
+            // so the dot is definitely a file extension — accept up to 5 chars.
             let before_delimiter = after_ext
                 .is_some_and(|ch| !ch.is_alphanumeric() && ch != '_' && ch != '.');
-            if is_extension && (after_ext.is_none() || before_delimiter) {
+            // At end of string: ambiguous — could be extension or module name.
+            // Use a known-extension set for 4-5 char suffixes to avoid
+            // misclassifying module names like `user`, `views`, `admin`.
+            let at_end = after_ext.is_none();
+
+            let is_extension = if before_delimiter {
+                (1..=5).contains(&ext_len)
+            } else if at_end {
+                (1..=3).contains(&ext_len) || is_known_extension(&rest[..ext_len])
+            } else {
+                false
+            };
+
+            if is_extension {
                 result.push('.');
             } else {
-                // Replace dot with slash (module separator)
                 result.push('/');
             }
         } else {
@@ -190,6 +198,15 @@ fn normalize_import_separators(text: &str) -> String {
         }
     }
     result
+}
+
+/// Check if a suffix (without the dot) is a known file extension that's 4+ chars.
+/// Used to disambiguate end-of-string dots from module separators.
+fn is_known_extension(ext: &str) -> bool {
+    matches!(
+        ext.to_lowercase().as_str(),
+        "json" | "yaml" | "toml" | "wasm" | "lock" | "html" | "scss" | "less" | "svelte"
+    )
 }
 
 /// Resolve a relative import like `./utils/helper` or `../models/user`.
@@ -505,8 +522,11 @@ pub fn build_symbol_graph(
         collect_relationship_edges(&file.declarations, &file_path, &name_to_ids, &mut edge_set);
     }
 
-    // Build edges from signature references (word-boundary matching)
-    // Only check type/struct/class/interface/trait names in signatures
+    // Build edges from signature references (word-boundary matching).
+    // Only check type/struct/class/interface/trait names in signatures.
+    // Note: this is O(N*M) where N = all symbols and M = type-like symbols.
+    // For very large codebases (10K+ symbols) this could become a bottleneck;
+    // an inverted index of type names per signature would reduce it to O(N).
     let type_keywords: &[&str] = &["struct ", "class ", "trait ", "interface ", "type ", "enum "];
     let type_names: Vec<(&str, &str)> = all_symbols
         .iter()
@@ -1359,11 +1379,34 @@ mod tests {
 
     #[test]
     fn test_normalize_replaces_module_dots() {
-        // Python-style module separators become slashes (4+ char segments are not extension-like)
+        // Python-style module separators become slashes
         assert_eq!(normalize_import_separators("app.models.user"), "app/models/user");
         assert_eq!(normalize_import_separators("app.models.views"), "app/models/views");
         // 1-3 char final segments still preserved as extensions
         assert_eq!(normalize_import_separators("app.models.py"), "app/models.py");
+    }
+
+    #[test]
+    fn test_normalize_preserves_known_long_extensions() {
+        // Known 4-5 char extensions at end of string are preserved
+        assert_eq!(normalize_import_separators("config.json"), "config.json");
+        assert_eq!(normalize_import_separators("config.yaml"), "config.yaml");
+        assert_eq!(normalize_import_separators("config.toml"), "config.toml");
+        assert_eq!(normalize_import_separators("module.wasm"), "module.wasm");
+        assert_eq!(normalize_import_separators("page.html"), "page.html");
+    }
+
+    #[test]
+    fn test_normalize_long_ext_before_delimiter() {
+        // Before a delimiter (quote), any 1-5 char suffix is treated as extension
+        assert_eq!(
+            normalize_import_separators("config.json'"),
+            "config.json'"
+        );
+        assert_eq!(
+            normalize_import_separators("data.yaml)"),
+            "data.yaml)"
+        );
     }
 
     #[test]
@@ -1395,6 +1438,36 @@ mod tests {
         assert_eq!(
             result.map(|p| p.to_string_lossy().to_string()),
             Some("src/lib/core/utils.ts".to_string())
+        );
+    }
+
+    // --- Edge case: empty / whitespace import text ---
+
+    #[test]
+    fn test_resolve_empty_import() {
+        let paths: Vec<&Path> = vec![Path::new("src/main.rs")];
+        let infos = make_path_infos(&paths);
+        let from = Path::new("src/main.rs");
+
+        assert!(resolve_import("", from, &infos).is_none());
+        assert!(resolve_import("   ", from, &infos).is_none());
+    }
+
+    // --- Mixed relative path with module-style dots ---
+
+    #[test]
+    fn test_resolve_relative_with_extension() {
+        let paths: Vec<&Path> = vec![
+            Path::new("src/config.json"),
+            Path::new("src/app.ts"),
+        ];
+        let infos = make_path_infos(&paths);
+        let from = Path::new("src/app.ts");
+
+        let result = resolve_import("{ c } from './config.json'", from, &infos);
+        assert_eq!(
+            result.map(|p| p.to_string_lossy().to_string()),
+            Some("src/config.json".to_string())
         );
     }
 }

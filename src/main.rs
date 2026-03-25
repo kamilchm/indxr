@@ -23,7 +23,7 @@ use anyhow::Result;
 use clap::Parser;
 
 use crate::cache::Cache;
-use crate::cli::{Cli, Command, GraphFormat, OutputFormat};
+use crate::cli::{Cli, Command, GraphFormat, GraphLevel, OutputFormat};
 use crate::filter::FilterOptions;
 use crate::languages::Language;
 use crate::model::declarations::DeclKind;
@@ -203,7 +203,14 @@ fn main() -> Result<()> {
 
     // Handle --graph mode (runs on unfiltered index to preserve all edges)
     if let Some(ref graph_format) = cli.graph {
-        let graph = dep_graph::build_file_graph(&index, cli.filter_path.as_deref(), cli.graph_depth);
+        let graph = match cli.graph_level {
+            Some(GraphLevel::Symbol) => {
+                dep_graph::build_symbol_graph(&index, cli.filter_path.as_deref(), cli.graph_depth)
+            }
+            _ => {
+                dep_graph::build_file_graph(&index, cli.filter_path.as_deref(), cli.graph_depth)
+            }
+        };
         let formatted = match graph_format {
             GraphFormat::Dot => dep_graph::format_dot(&graph),
             GraphFormat::Mermaid => dep_graph::format_mermaid(&graph),
