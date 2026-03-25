@@ -504,10 +504,11 @@ pub fn build_symbol_graph(
     let scope_lower = scope.map(|s| s.to_lowercase());
 
     // Collect ALL symbols (needed so relationship targets across files can be resolved)
+    let mut name_counts: HashMap<String, usize> = HashMap::new();
     let mut all_symbols: Vec<SymInfo> = Vec::new();
     for file in &index.files {
         let file_path = file.path.to_string_lossy().to_string();
-        collect_symbols_ext(&file.declarations, &file_path, &mut all_symbols);
+        collect_symbols_ext(&file.declarations, &file_path, &mut name_counts, &mut all_symbols);
     }
 
     // Build name → id index for relationship targets
@@ -521,11 +522,13 @@ pub fn build_symbol_graph(
         map
     };
 
-    // Build ALL edges from relationships
+    // Build ALL edges from relationships — use a fresh counter so IDs are
+    // generated in the same order as collect_symbols_ext above.
+    let mut edge_name_counts: HashMap<String, usize> = HashMap::new();
     let mut edge_set: HashSet<(String, String, EdgeKind)> = HashSet::new();
     for file in &index.files {
         let file_path = file.path.to_string_lossy().to_string();
-        collect_relationship_edges(&file.declarations, &file_path, &name_to_ids, &mut edge_set);
+        collect_relationship_edges(&file.declarations, &file_path, &mut edge_name_counts, &name_to_ids, &mut edge_set);
     }
 
     // Build edges from signature references (word-boundary matching).
@@ -615,23 +618,42 @@ struct SymInfo {
     signature: String,
 }
 
-fn collect_symbols_ext(decls: &[Declaration], file_path: &str, out: &mut Vec<SymInfo>) {
+/// Build a unique symbol ID. Appends a counter suffix when the same name appears
+/// multiple times in the same file (e.g. `fn new()` in two different `impl` blocks).
+fn symbol_id(file_path: &str, name: &str, name_counts: &mut HashMap<String, usize>) -> String {
+    let key = format!("{}::{}", file_path, name);
+    let count = name_counts.entry(key.clone()).or_insert(0);
+    *count += 1;
+    if *count == 1 {
+        key
+    } else {
+        format!("{}#{}", key, count)
+    }
+}
+
+fn collect_symbols_ext(
+    decls: &[Declaration],
+    file_path: &str,
+    name_counts: &mut HashMap<String, usize>,
+    out: &mut Vec<SymInfo>,
+) {
     for decl in decls {
         if decl.name.is_empty() {
             continue;
         }
         out.push(SymInfo {
-            id: format!("{}::{}", file_path, decl.name),
+            id: symbol_id(file_path, &decl.name, name_counts),
             name: decl.name.clone(),
             signature: decl.signature.clone(),
         });
-        collect_symbols_ext(&decl.children, file_path, out);
+        collect_symbols_ext(&decl.children, file_path, name_counts, out);
     }
 }
 
 fn collect_relationship_edges(
     decls: &[Declaration],
     file_path: &str,
+    name_counts: &mut HashMap<String, usize>,
     name_to_ids: &HashMap<&str, Vec<&str>>,
     edge_set: &mut HashSet<(String, String, EdgeKind)>,
 ) {
@@ -639,7 +661,7 @@ fn collect_relationship_edges(
         if decl.name.is_empty() {
             continue;
         }
-        let from_id = format!("{}::{}", file_path, decl.name);
+        let from_id = symbol_id(file_path, &decl.name, name_counts);
         for rel in &decl.relationships {
             let edge_kind = match rel.kind {
                 RelKind::Extends => EdgeKind::Extends,
@@ -653,7 +675,7 @@ fn collect_relationship_edges(
                 }
             }
         }
-        collect_relationship_edges(&decl.children, file_path, name_to_ids, edge_set);
+        collect_relationship_edges(&decl.children, file_path, name_counts, name_to_ids, edge_set);
     }
 }
 
@@ -745,7 +767,7 @@ pub fn format_mermaid(graph: &DepGraph) -> String {
     }
 
     // Emit node declarations once (escape chars that break Mermaid label syntax)
-    let escape_mermaid = |s: &str| s.replace('\\', "\\\\").replace('"', "#quot;").replace(']', "#93;");
+    let escape_mermaid = |s: &str| s.replace('\\', "\\\\").replace('"', "#quot;").replace('[', "#91;").replace(']', "#93;");
     for node in &graph.nodes {
         let nid = &id_map[node.id.as_str()];
         out.push_str(&format!("  {}[\"{}\"]\n", nid, escape_mermaid(&node.id)));
@@ -1505,6 +1527,40 @@ mod tests {
         );
     }
 
+    // --- Symbol ID uniqueness ---
+
+    #[test]
+    fn test_symbol_id_uniqueness_same_name() {
+        // Two functions named "new" in the same file (e.g. different impl blocks)
+        // Each references a distinct type so they produce edges and appear as nodes.
+        let func1 = make_decl("new", "fn new() -> Foo");
+        let func2 = make_decl("new", "fn new() -> Bar");
+        let foo = make_struct("Foo");
+        let bar = make_struct("Bar");
+
+        let index = make_index(vec![
+            make_file("src/lib.rs", vec![], vec![func1, func2]),
+            make_file("src/types.rs", vec![], vec![foo, bar]),
+        ]);
+
+        let graph = build_symbol_graph(&index, None, None);
+        // Both "new" symbols should appear as distinct nodes (via signature references)
+        let new_nodes: Vec<_> = graph
+            .nodes
+            .iter()
+            .filter(|n| n.label == "new")
+            .collect();
+        assert_eq!(
+            new_nodes.len(),
+            2,
+            "Two declarations named 'new' should produce two distinct nodes"
+        );
+        assert_ne!(
+            new_nodes[0].id, new_nodes[1].id,
+            "Duplicate-named symbols must have distinct IDs"
+        );
+    }
+
     // --- Mermaid special character escaping ---
 
     #[test]
@@ -1517,14 +1573,14 @@ mod tests {
                     kind: NodeKind::File,
                 },
                 GraphNode {
-                    id: "src/baz]qux.rs".to_string(),
-                    label: "baz]qux.rs".to_string(),
+                    id: "src/baz[x]qux.rs".to_string(),
+                    label: "baz[x]qux.rs".to_string(),
                     kind: NodeKind::File,
                 },
             ],
             edges: vec![GraphEdge {
                 from: "src/foo\"bar.rs".to_string(),
-                to: "src/baz]qux.rs".to_string(),
+                to: "src/baz[x]qux.rs".to_string(),
                 kind: EdgeKind::Imports,
             }],
         };
@@ -1535,6 +1591,7 @@ mod tests {
             mermaid.contains("#quot;"),
             "Double quotes should be escaped"
         );
+        assert!(mermaid.contains("#91;"), "Opening brackets should be escaped");
         assert!(mermaid.contains("#93;"), "Closing brackets should be escaped");
         assert!(
             !mermaid.contains("foo\"bar"),
