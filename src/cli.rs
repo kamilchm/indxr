@@ -99,7 +99,7 @@ pub struct Cli {
     pub omit_tree: bool,
 
     // === Dependency graph ===
-    /// Output dependency graph instead of index (dot or mermaid)
+    /// Output dependency graph instead of index (dot, mermaid, or json)
     #[arg(long, value_name = "FORMAT")]
     pub graph: Option<GraphFormat>,
 }
@@ -217,4 +217,5 @@ pub enum OutputFormat {
 pub enum GraphFormat {
     Dot,
     Mermaid,
+    Json,
 }

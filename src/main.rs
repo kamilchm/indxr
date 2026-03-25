@@ -201,24 +201,14 @@ fn main() -> Result<()> {
         },
     };
 
-    // Apply filters
-    let filter_opts = FilterOptions {
-        filter_path: cli.filter_path.clone(),
-        symbol: cli.symbol.clone(),
-        kind: cli.kind.as_ref().and_then(|k| DeclKind::from_name(k)),
-        public_only: cli.public_only,
-    };
-
-    if filter_opts.is_active() {
-        filter::apply_filters(&mut index, &filter_opts);
-    }
-
-    // Handle --graph mode (output dependency graph instead of index)
+    // Handle --graph mode (runs on unfiltered index to preserve all edges)
     if let Some(ref graph_format) = cli.graph {
         let graph = dep_graph::build_file_graph(&index, cli.filter_path.as_deref(), None);
         let formatted = match graph_format {
             GraphFormat::Dot => dep_graph::format_dot(&graph),
             GraphFormat::Mermaid => dep_graph::format_mermaid(&graph),
+            GraphFormat::Json => serde_json::to_string_pretty(&dep_graph::format_json(&graph))
+                .unwrap_or_default(),
         };
         if let Some(output_path) = &cli.output {
             fs::write(output_path, &formatted)?;
@@ -234,6 +224,18 @@ fn main() -> Result<()> {
             print!("{}", formatted);
         }
         return Ok(());
+    }
+
+    // Apply filters
+    let filter_opts = FilterOptions {
+        filter_path: cli.filter_path.clone(),
+        symbol: cli.symbol.clone(),
+        kind: cli.kind.as_ref().and_then(|k| DeclKind::from_name(k)),
+        public_only: cli.public_only,
+    };
+
+    if filter_opts.is_active() {
+        filter::apply_filters(&mut index, &filter_opts);
     }
 
     // Apply token budget

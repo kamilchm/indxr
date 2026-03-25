@@ -50,7 +50,19 @@ pub enum EdgeKind {
 // Import resolution heuristic
 // ---------------------------------------------------------------------------
 
+/// Pre-computed lowercase path info to avoid repeated allocations during import
+/// resolution. Built once per graph build, then reused for every import.
+struct PathInfo<'a> {
+    path: &'a Path,
+    lower: String,
+    no_ext_lower: String,
+}
+
 /// Try to resolve an import text to one of the indexed file paths.
+///
+/// This is a best-effort heuristic. It handles Rust `crate::`, JS/TS relative
+/// (`./`, `../`), Python `module.path`, and generic path-segment matching.
+/// External/third-party imports that don't map to indexed files return `None`.
 ///
 /// Strategy:
 /// 1. Relative imports (`./` or `../`) — resolve from the importing file's dir
@@ -59,7 +71,7 @@ pub enum EdgeKind {
 fn resolve_import<'a>(
     import_text: &str,
     from_file: &Path,
-    all_paths: &[&'a Path],
+    path_infos: &'a [PathInfo<'a>],
 ) -> Option<&'a Path> {
     let text = import_text.trim();
     if text.is_empty() {
@@ -67,8 +79,14 @@ fn resolve_import<'a>(
     }
 
     // --- Relative imports (JS/TS/Python style) ---
-    if text.contains("./") || text.contains("../") {
-        if let Some(resolved) = resolve_relative_import(text, from_file, all_paths) {
+    if text.starts_with("./")
+        || text.starts_with("../")
+        || text.contains(" from './")
+        || text.contains(" from \"./")
+        || text.contains(" from '../")
+        || text.contains(" from \"../")
+    {
+        if let Some(resolved) = resolve_relative_import(text, from_file, path_infos) {
             return Some(resolved);
         }
     }
@@ -83,8 +101,9 @@ fn resolve_import<'a>(
         .trim();
 
     // Normalize separators: `crate::parser::queries` → `crate/parser/queries`
-    //                       `com.example.MyClass`    → `com/example/MyClass`
-    let normalized = cleaned.replace("::", "/").replace('.', "/");
+    // For dots, only replace those between alphanumeric segments (not file extensions
+    // like `.h`, `.rs`, `.py` which should be preserved).
+    let normalized = normalize_import_separators(cleaned);
 
     // Strip common prefixes that don't map to paths
     let stripped = strip_import_prefixes(&normalized);
@@ -111,7 +130,7 @@ fn resolve_import<'a>(
             continue;
         }
 
-        if let Some(found) = match_path_candidate(&candidate_lower, all_paths) {
+        if let Some(found) = match_path_candidate(&candidate_lower, path_infos) {
             if found != from_file {
                 return Some(found);
             }
@@ -128,7 +147,7 @@ fn resolve_import<'a>(
             continue;
         }
 
-        if let Some(found) = match_path_candidate(&candidate_lower, all_paths) {
+        if let Some(found) = match_path_candidate(&candidate_lower, path_infos) {
             if found != from_file {
                 return Some(found);
             }
@@ -138,11 +157,43 @@ fn resolve_import<'a>(
     None
 }
 
+/// Normalize import separators: `::` → `/`, dots → `/` only between identifier segments.
+/// Preserves dots that look like file extensions (e.g., `.h`, `.rs`, `.py`).
+fn normalize_import_separators(text: &str) -> String {
+    // First replace `::` with `/`
+    let after_colons = text.replace("::", "/");
+
+    // Replace dots only if not preceded by a `/` and followed by a short extension-like suffix
+    let mut result = String::with_capacity(after_colons.len());
+    let chars: Vec<char> = after_colons.chars().collect();
+    for (i, &c) in chars.iter().enumerate() {
+        if c == '.' {
+            // Check if this looks like a file extension: dot followed by 1-4 alnum chars at end or before non-alnum
+            let rest = &after_colons[i + 1..];
+            let ext_len = rest.chars().take_while(|c| c.is_alphanumeric()).count();
+            let after_ext = rest.chars().skip(ext_len).next();
+            let is_extension = (1..=4).contains(&ext_len)
+                && (after_ext.is_none() || !after_ext.unwrap().is_alphanumeric());
+
+            // If it looks like an extension at the end of text, preserve the dot
+            if is_extension && after_ext.is_none() {
+                result.push('.');
+            } else {
+                // Replace dot with slash (module separator)
+                result.push('/');
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
 /// Resolve a relative import like `./utils/helper` or `../models/user`.
 fn resolve_relative_import<'a>(
     text: &str,
     from_file: &Path,
-    all_paths: &[&'a Path],
+    path_infos: &'a [PathInfo<'a>],
 ) -> Option<&'a Path> {
     // Extract the path portion from import text
     // Handles: `{ foo } from './utils/helper'`, `'./utils/helper'`, `./utils/helper`
@@ -154,22 +205,20 @@ fn resolve_relative_import<'a>(
     let resolved_str = resolved.to_string_lossy().to_lowercase();
 
     // Try exact match, then with common extensions
-    for path in all_paths {
-        let path_str = path.to_string_lossy().to_lowercase();
-        let path_no_ext = path.with_extension("").to_string_lossy().to_lowercase();
-
-        if (path_str == resolved_str || path_no_ext == resolved_str) && *path != from_file {
-            return Some(path);
+    for info in path_infos {
+        if (info.lower == resolved_str || info.no_ext_lower == resolved_str)
+            && info.path != from_file
+        {
+            return Some(info.path);
         }
     }
 
     // Also try with /index or /mod suffix for directory-style imports
     for suffix in &["/index", "/mod"] {
         let dir_import = format!("{}{}", resolved_str, suffix);
-        for path in all_paths {
-            let path_no_ext = path.with_extension("").to_string_lossy().to_lowercase();
-            if path_no_ext == dir_import && *path != from_file {
-                return Some(path);
+        for info in path_infos {
+            if info.no_ext_lower == dir_import && info.path != from_file {
+                return Some(info.path);
             }
         }
     }
@@ -246,26 +295,26 @@ fn strip_import_prefixes(normalized: &str) -> &str {
 }
 
 /// Try to match a candidate path fragment against indexed file paths.
-fn match_path_candidate<'a>(candidate_lower: &str, all_paths: &[&'a Path]) -> Option<&'a Path> {
+fn match_path_candidate<'a>(candidate_lower: &str, path_infos: &'a [PathInfo<'a>]) -> Option<&'a Path> {
     let mut best: Option<&'a Path> = None;
     let mut best_len = usize::MAX;
 
-    for path in all_paths {
-        let path_str = path.to_string_lossy().to_lowercase();
-        let path_no_ext = path.with_extension("").to_string_lossy().to_lowercase();
+    let mod_candidate = format!("{}/mod", candidate_lower);
+    let index_candidate = format!("{}/index", candidate_lower);
 
+    for info in path_infos {
         // Check if the path ends with our candidate (with or without extension)
-        let matches = path_str.ends_with(candidate_lower)
-            || path_no_ext.ends_with(candidate_lower)
+        let matches = info.lower.ends_with(candidate_lower)
+            || info.no_ext_lower.ends_with(candidate_lower)
             // Also match mod.rs / index.ts style: candidate "parser" matches "parser/mod.rs"
-            || path_no_ext.ends_with(&format!("{}/mod", candidate_lower))
-            || path_no_ext.ends_with(&format!("{}/index", candidate_lower));
+            || info.no_ext_lower.ends_with(&mod_candidate)
+            || info.no_ext_lower.ends_with(&index_candidate);
 
         if matches {
             // Prefer shorter paths (more specific match)
-            let len = path_str.len();
+            let len = info.lower.len();
             if len < best_len {
-                best = Some(path);
+                best = Some(info.path);
                 best_len = len;
             }
         }
@@ -285,37 +334,43 @@ pub fn build_file_graph(
 ) -> DepGraph {
     let all_paths: Vec<&Path> = index.files.iter().map(|f| f.path.as_path()).collect();
 
-    // Determine scoped files
-    let scoped_files: Vec<&Path> = if let Some(scope) = scope {
-        let scope_lower = scope.to_lowercase();
-        all_paths
-            .iter()
-            .filter(|p| p.to_string_lossy().to_lowercase().contains(&scope_lower))
-            .copied()
-            .collect()
-    } else {
-        all_paths.clone()
-    };
-
-    let scoped_set: HashSet<&str> = scoped_files
+    // Pre-compute lowercase path info once (avoids repeated allocations in inner loops)
+    let path_infos: Vec<PathInfo> = all_paths
         .iter()
-        .map(|p| p.to_str().unwrap_or(""))
+        .map(|p| PathInfo {
+            path: p,
+            lower: p.to_string_lossy().to_lowercase(),
+            no_ext_lower: p.with_extension("").to_string_lossy().to_lowercase(),
+        })
         .collect();
 
-    // Build adjacency: source_file → set of target_files
-    let mut adjacency: HashMap<String, HashSet<String>> = HashMap::new();
+    // Determine scoped files (seeds for depth limiting)
+    let scoped_set: HashSet<&str> = if let Some(scope) = scope {
+        let scope_lower = scope.to_lowercase();
+        path_infos
+            .iter()
+            .filter(|info| info.lower.contains(&scope_lower))
+            .map(|info| info.path.to_str().unwrap_or(""))
+            .collect()
+    } else {
+        all_paths
+            .iter()
+            .map(|p| p.to_str().unwrap_or(""))
+            .collect()
+    };
+
+    // Build full adjacency for all files (needed so depth limiting can
+    // discover transitive dependencies through non-scoped files)
+    let mut full_adjacency: HashMap<String, HashSet<String>> = HashMap::new();
 
     for file in &index.files {
         let file_path = file.path.to_string_lossy().to_string();
-        if !scoped_set.contains(file_path.as_str()) {
-            continue;
-        }
 
         for imp in &file.imports {
-            if let Some(target) = resolve_import(&imp.text, &file.path, &all_paths) {
+            if let Some(target) = resolve_import(&imp.text, &file.path, &path_infos) {
                 let target_str = target.to_string_lossy().to_string();
                 if target_str != file_path {
-                    adjacency
+                    full_adjacency
                         .entry(file_path.clone())
                         .or_default()
                         .insert(target_str);
@@ -324,10 +379,13 @@ pub fn build_file_graph(
         }
     }
 
-    // Apply depth limit if specified (BFS from scoped files)
-    if let Some(max_depth) = depth {
-        adjacency = limit_depth_file(&adjacency, &scoped_set, max_depth);
-    }
+    // Apply scope and depth limiting
+    let adjacency = if depth.is_some() || scope.is_some() {
+        let max_depth = depth.unwrap_or(usize::MAX);
+        limit_depth_file(&full_adjacency, &scoped_set, max_depth)
+    } else {
+        full_adjacency
+    };
 
     // Collect nodes and edges
     let mut node_set: HashSet<String> = HashSet::new();
@@ -419,23 +477,17 @@ pub fn build_symbol_graph(
 ) -> DepGraph {
     let scope_lower = scope.map(|s| s.to_lowercase());
 
-    let mut symbols: Vec<SymInfo> = Vec::new();
-
-    // Build symbol list
+    // Collect ALL symbols (needed so relationship targets across files can be resolved)
+    let mut all_symbols: Vec<SymInfo> = Vec::new();
     for file in &index.files {
         let file_path = file.path.to_string_lossy().to_string();
-        if let Some(ref sl) = scope_lower {
-            if !file_path.to_lowercase().contains(sl.as_str()) {
-                continue;
-            }
-        }
-        collect_symbols_ext(&file.declarations, &file_path, &mut symbols);
+        collect_symbols_ext(&file.declarations, &file_path, &mut all_symbols);
     }
 
     // Build name → id index for relationship targets
     let name_to_ids: HashMap<&str, Vec<&str>> = {
         let mut map: HashMap<&str, Vec<&str>> = HashMap::new();
-        for sym in &symbols {
+        for sym in &all_symbols {
             map.entry(sym.name.as_str())
                 .or_default()
                 .push(sym.id.as_str());
@@ -443,22 +495,16 @@ pub fn build_symbol_graph(
         map
     };
 
-    // Build edges from relationships
+    // Build ALL edges from relationships
     let mut edge_set: HashSet<(String, String, EdgeKind)> = HashSet::new();
-
     for file in &index.files {
         let file_path = file.path.to_string_lossy().to_string();
-        if let Some(ref sl) = scope_lower {
-            if !file_path.to_lowercase().contains(sl.as_str()) {
-                continue;
-            }
-        }
         collect_relationship_edges(&file.declarations, &file_path, &name_to_ids, &mut edge_set);
     }
 
     // Build edges from signature references (word-boundary matching)
     // Only check type/struct/class/interface/trait names in signatures
-    let type_names: Vec<(&str, &str)> = symbols
+    let type_names: Vec<(&str, &str)> = all_symbols
         .iter()
         .filter(|s| {
             let sig_lower = s.signature.to_lowercase();
@@ -472,7 +518,7 @@ pub fn build_symbol_graph(
         .map(|s| (s.name.as_str(), s.id.as_str()))
         .collect();
 
-    for sym in &symbols {
+    for sym in &all_symbols {
         for &(type_name, type_id) in &type_names {
             if sym.id == type_id || type_name.len() < 3 {
                 continue;
@@ -483,14 +529,23 @@ pub fn build_symbol_graph(
         }
     }
 
-    // Apply depth limiting
+    // Apply scope and depth limiting
     let mut edges_vec: Vec<GraphEdge> = edge_set
         .into_iter()
         .map(|(from, to, kind)| GraphEdge { from, to, kind })
         .collect();
 
-    if let Some(max_depth) = depth {
-        let seed_ids: HashSet<&str> = symbols.iter().map(|s| s.id.as_str()).collect();
+    if scope.is_some() || depth.is_some() {
+        let seed_ids: HashSet<&str> = if let Some(ref sl) = scope_lower {
+            all_symbols
+                .iter()
+                .filter(|s| s.id.to_lowercase().contains(sl.as_str()))
+                .map(|s| s.id.as_str())
+                .collect()
+        } else {
+            all_symbols.iter().map(|s| s.id.as_str()).collect()
+        };
+        let max_depth = depth.unwrap_or(usize::MAX);
         edges_vec = limit_depth_symbol(edges_vec, &seed_ids, max_depth);
     }
 
@@ -503,7 +558,8 @@ pub fn build_symbol_graph(
         node_set.insert(e.to.clone());
     }
 
-    let sym_map: HashMap<&str, &SymInfo> = symbols.iter().map(|s| (s.id.as_str(), s)).collect();
+    let sym_map: HashMap<&str, &SymInfo> =
+        all_symbols.iter().map(|s| (s.id.as_str(), s)).collect();
 
     let mut nodes: Vec<GraphNode> = node_set
         .into_iter()
@@ -664,6 +720,13 @@ pub fn format_mermaid(graph: &DepGraph) -> String {
             .collect()
     };
 
+    // Emit node declarations once
+    for node in &graph.nodes {
+        let san = sanitize(&node.id);
+        out.push_str(&format!("  {}[\"{}\"]\n", san, node.id));
+    }
+
+    // Emit edges referencing sanitized ids only
     for edge in &graph.edges {
         let from_san = sanitize(&edge.from);
         let to_san = sanitize(&edge.to);
@@ -673,10 +736,7 @@ pub fn format_mermaid(graph: &DepGraph) -> String {
             EdgeKind::Extends => "-->|extends|",
             EdgeKind::Implements => "-->|implements|",
         };
-        out.push_str(&format!(
-            "  {}[\"{}\"] {} {}[\"{}\"]\n",
-            from_san, edge.from, arrow, to_san, edge.to
-        ));
+        out.push_str(&format!("  {} {} {}\n", from_san, arrow, to_san));
     }
 
     out.push_str("```\n");
@@ -756,6 +816,17 @@ mod tests {
         )
     }
 
+    fn make_path_infos<'a>(paths: &'a [&'a Path]) -> Vec<PathInfo<'a>> {
+        paths
+            .iter()
+            .map(|p| PathInfo {
+                path: p,
+                lower: p.to_string_lossy().to_lowercase(),
+                no_ext_lower: p.with_extension("").to_string_lossy().to_lowercase(),
+            })
+            .collect()
+    }
+
     // --- Import resolution tests ---
 
     #[test]
@@ -765,9 +836,10 @@ mod tests {
             Path::new("src/model/mod.rs"),
             Path::new("src/main.rs"),
         ];
+        let infos = make_path_infos(&paths);
         let from = Path::new("src/main.rs");
 
-        let result = resolve_import("crate::parser", from, &paths);
+        let result = resolve_import("crate::parser", from, &infos);
         assert_eq!(
             result.map(|p| p.to_string_lossy().to_string()),
             Some("src/parser/mod.rs".to_string())
@@ -781,9 +853,10 @@ mod tests {
             Path::new("src/parser/mod.rs"),
             Path::new("src/main.rs"),
         ];
+        let infos = make_path_infos(&paths);
         let from = Path::new("src/main.rs");
 
-        let result = resolve_import("crate::parser::queries::rust", from, &paths);
+        let result = resolve_import("crate::parser::queries::rust", from, &infos);
         assert_eq!(
             result.map(|p| p.to_string_lossy().to_string()),
             Some("src/parser/queries/rust.rs".to_string())
@@ -796,9 +869,10 @@ mod tests {
             Path::new("src/utils/helper.ts"),
             Path::new("src/components/app.ts"),
         ];
+        let infos = make_path_infos(&paths);
         let from = Path::new("src/components/app.ts");
 
-        let result = resolve_import("{ foo } from '../utils/helper'", from, &paths);
+        let result = resolve_import("{ foo } from '../utils/helper'", from, &infos);
         assert_eq!(
             result.map(|p| p.to_string_lossy().to_string()),
             Some("src/utils/helper.ts".to_string())
@@ -811,9 +885,10 @@ mod tests {
             Path::new("src/utils/helper.ts"),
             Path::new("src/utils/main.ts"),
         ];
+        let infos = make_path_infos(&paths);
         let from = Path::new("src/utils/main.ts");
 
-        let result = resolve_import("{ foo } from './helper'", from, &paths);
+        let result = resolve_import("{ foo } from './helper'", from, &infos);
         assert_eq!(
             result.map(|p| p.to_string_lossy().to_string()),
             Some("src/utils/helper.ts".to_string())
@@ -823,9 +898,10 @@ mod tests {
     #[test]
     fn test_resolve_python_import() {
         let paths: Vec<&Path> = vec![Path::new("app/models.py"), Path::new("app/views.py")];
+        let infos = make_path_infos(&paths);
         let from = Path::new("app/views.py");
 
-        let result = resolve_import("app.models", from, &paths);
+        let result = resolve_import("app.models", from, &infos);
         assert_eq!(
             result.map(|p| p.to_string_lossy().to_string()),
             Some("app/models.py".to_string())
@@ -835,28 +911,31 @@ mod tests {
     #[test]
     fn test_no_resolve_external_import() {
         let paths: Vec<&Path> = vec![Path::new("src/main.rs"), Path::new("src/lib.rs")];
+        let infos = make_path_infos(&paths);
         let from = Path::new("src/main.rs");
 
-        let result = resolve_import("std::collections::HashMap", from, &paths);
+        let result = resolve_import("std::collections::HashMap", from, &infos);
         assert!(result.is_none());
     }
 
     #[test]
     fn test_no_resolve_short_stem() {
         let paths: Vec<&Path> = vec![Path::new("src/io.rs"), Path::new("src/main.rs")];
+        let infos = make_path_infos(&paths);
         let from = Path::new("src/main.rs");
 
         // "io" is only 2 chars — should not produce false matches
-        let result = resolve_import("io", from, &paths);
+        let result = resolve_import("io", from, &infos);
         assert!(result.is_none());
     }
 
     #[test]
     fn test_no_self_import() {
         let paths: Vec<&Path> = vec![Path::new("src/parser/mod.rs")];
+        let infos = make_path_infos(&paths);
         let from = Path::new("src/parser/mod.rs");
 
-        let result = resolve_import("crate::parser", from, &paths);
+        let result = resolve_import("crate::parser", from, &infos);
         assert!(result.is_none());
     }
 
@@ -920,6 +999,82 @@ mod tests {
         assert_eq!(graph.edges.len(), 1);
     }
 
+    // --- Depth limiting tests ---
+
+    #[test]
+    fn test_file_graph_depth_limit() {
+        // Chain: main → parser → model → utils
+        let index = make_index(vec![
+            make_file("src/main.rs", vec!["crate::parser"], vec![]),
+            make_file("src/parser/mod.rs", vec!["crate::model"], vec![]),
+            make_file("src/model/mod.rs", vec!["crate::utils"], vec![]),
+            make_file("src/utils/mod.rs", vec![], vec![]),
+        ]);
+
+        // depth=1 from all files: each file can reach 1 hop
+        let graph_full = build_file_graph(&index, None, None);
+        assert_eq!(graph_full.edges.len(), 3);
+
+        // Scope to main with depth=1 → should only show main → parser
+        let graph_d1 = build_file_graph(&index, Some("main"), Some(1));
+        assert_eq!(graph_d1.edges.len(), 1);
+        assert_eq!(graph_d1.edges[0].from, "src/main.rs");
+        assert_eq!(graph_d1.edges[0].to, "src/parser/mod.rs");
+
+        // Scope to main with depth=2 → main → parser and parser → model
+        let graph_d2 = build_file_graph(&index, Some("main"), Some(2));
+        assert_eq!(graph_d2.edges.len(), 2);
+    }
+
+    #[test]
+    fn test_symbol_graph_depth_limit() {
+        // A → B → C via extends chain
+        let mut a = make_decl("A", "class A extends B");
+        a.kind = DeclKind::Class;
+        a.relationships.push(Relationship {
+            kind: RelKind::Extends,
+            target: "B".to_string(),
+        });
+
+        let mut b = make_decl("B", "class B extends C");
+        b.kind = DeclKind::Class;
+        b.relationships.push(Relationship {
+            kind: RelKind::Extends,
+            target: "C".to_string(),
+        });
+
+        let mut c = make_struct("C");
+        c.kind = DeclKind::Class;
+        c.signature = "class C".to_string();
+
+        let index = make_index(vec![
+            make_file("src/a.ts", vec![], vec![a]),
+            make_file("src/b.ts", vec![], vec![b]),
+            make_file("src/c.ts", vec![], vec![c]),
+        ]);
+
+        // Full graph should have extends edges: A→B, B→C
+        // Plus possible signature references (A sig mentions B, B sig mentions C)
+        let graph_full = build_symbol_graph(&index, None, None);
+        let extends_edges: Vec<_> = graph_full
+            .edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Extends)
+            .collect();
+        assert_eq!(extends_edges.len(), 2);
+
+        // Scope to a.ts with depth=1 → only A's direct relationships visible
+        let graph_d1 = build_symbol_graph(&index, Some("a.ts"), Some(1));
+        let extends_d1: Vec<_> = graph_d1
+            .edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Extends)
+            .collect();
+        assert_eq!(extends_d1.len(), 1);
+        assert!(extends_d1[0].from.contains("A"));
+        assert!(extends_d1[0].to.contains("B"));
+    }
+
     // --- Symbol graph tests ---
 
     #[test]
@@ -948,6 +1103,34 @@ mod tests {
         assert_eq!(extends_edges.len(), 1);
         assert!(extends_edges[0].from.contains("ChildClass"));
         assert!(extends_edges[0].to.contains("BaseClass"));
+    }
+
+    #[test]
+    fn test_symbol_graph_implements() {
+        let mut implementor = make_decl("MyService", "class MyService implements Service");
+        implementor.kind = DeclKind::Class;
+        implementor.relationships.push(Relationship {
+            kind: RelKind::Implements,
+            target: "Service".to_string(),
+        });
+
+        let mut iface = make_decl("Service", "interface Service");
+        iface.kind = DeclKind::Interface;
+
+        let index = make_index(vec![
+            make_file("src/my_service.ts", vec![], vec![implementor]),
+            make_file("src/service.ts", vec![], vec![iface]),
+        ]);
+
+        let graph = build_symbol_graph(&index, None, None);
+        let impl_edges: Vec<_> = graph
+            .edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Implements)
+            .collect();
+        assert_eq!(impl_edges.len(), 1);
+        assert!(impl_edges[0].from.contains("MyService"));
+        assert!(impl_edges[0].to.contains("Service"));
     }
 
     #[test]
