@@ -413,8 +413,7 @@ pub(super) fn tool_regenerate_index(index: &mut CodebaseIndex, config: &IndexCon
                 }
             }
 
-            let structural_diff =
-                diff::compute_structural_diff(&new_index, &old_files, &all_paths);
+            let structural_diff = diff::compute_structural_diff(&new_index, &old_files, &all_paths);
 
             let has_changes = !structural_diff.files_added.is_empty()
                 || !structural_diff.files_removed.is_empty()
@@ -797,11 +796,7 @@ pub(super) fn tool_read_source(index: &CodebaseIndex, args: &Value) -> Value {
     };
 
     // Apply expand and cap at 200 lines
-    let start = if expand < start {
-        start - expand
-    } else {
-        1
-    };
+    let start = if expand < start { start - expand } else { 1 };
     let end = end + expand;
     let max_lines = 200;
     let end = if end - start + 1 > max_lines {
@@ -859,11 +854,7 @@ pub(super) fn tool_get_file_context(index: &CodebaseIndex, args: &Value) -> Valu
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
     // Build path-based match targets (e.g., "parser/mod", "parser")
-    let path_no_ext = file
-        .path
-        .with_extension("")
-        .to_string_lossy()
-        .to_string();
+    let path_no_ext = file.path.with_extension("").to_string_lossy().to_string();
     // For mod.rs files, also match on the parent directory name
     let parent_module = if file_stem == "mod" || file_stem == "index" {
         file.path
@@ -984,9 +975,7 @@ pub(super) fn tool_get_token_estimate(index: &CodebaseIndex, args: &Value) -> Va
                 } else {
                     match &glob_matcher {
                         Some(m) => m.is_match(fp.as_ref()),
-                        None => {
-                            fp == dir_or_glob || fp.starts_with(&format!("{}/", dir_or_glob))
-                        }
+                        None => fp == dir_or_glob || fp.starts_with(&format!("{}/", dir_or_glob)),
                     }
                 }
             })
@@ -1443,9 +1432,7 @@ pub(super) fn tool_get_related_tests(index: &CodebaseIndex, args: &Value) -> Val
         };
 
         // Skip if we already searched this file in scope_path
-        if scope_path.is_some_and(|p| {
-            file_path == p || file_path.ends_with(&format!("/{}", p))
-        }) {
+        if scope_path.is_some_and(|p| file_path == p || file_path.ends_with(&format!("/{}", p))) {
             continue;
         }
 

@@ -375,7 +375,14 @@ pub(super) fn score_decls_recursive(
             }
         }
 
-        score_decls_recursive(&decl.children, file_path, query, terms, results, kind_filter);
+        score_decls_recursive(
+            &decl.children,
+            file_path,
+            query,
+            terms,
+            results,
+            kind_filter,
+        );
     }
 }
 
@@ -538,7 +545,9 @@ pub(super) fn collapse_nested_bodies(source: &str) -> String {
             if ch == '"' {
                 // Check if followed by raw_hash_count '#' chars
                 let mut hashes = 0;
-                while i + 1 + hashes < len && chars[i + 1 + hashes] == '#' && hashes < raw_hash_count
+                while i + 1 + hashes < len
+                    && chars[i + 1 + hashes] == '#'
+                    && hashes < raw_hash_count
                 {
                     hashes += 1;
                 }
@@ -668,7 +677,9 @@ pub(super) fn collapse_nested_bodies(source: &str) -> String {
 
 /// Check if the caller requested compact columnar output.
 pub(super) fn is_compact(args: &Value) -> bool {
-    args.get("compact").and_then(|v| v.as_bool()).unwrap_or(false)
+    args.get("compact")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
 }
 
 /// Serialize a slice of Serialize items into compact columnar format.

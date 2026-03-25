@@ -14,7 +14,9 @@ use crate::indexer::IndexConfig;
 use crate::model::CodebaseIndex;
 use crate::parser::ParserRegistry;
 
-use self::tools::{handle_tool_call, tool_definitions, tool_get_diff_summary, tool_regenerate_index};
+use self::tools::{
+    handle_tool_call, tool_definitions, tool_get_diff_summary, tool_regenerate_index,
+};
 
 // ---------------------------------------------------------------------------
 // JSON-RPC 2.0 types

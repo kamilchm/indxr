@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 
 use crate::languages::Language;
-use crate::model::declarations::{DeclKind, Declaration, Relationship, RelKind, Visibility};
+use crate::model::declarations::{DeclKind, Declaration, RelKind, Relationship, Visibility};
 use crate::model::{CodebaseIndex, FileIndex, Import, IndexStats};
 
 use super::helpers::*;
@@ -42,7 +42,11 @@ fn test_score_match_multi_term() {
     assert_eq!(score, 16);
 
     // When full query IS a substring, it scores higher
-    let score2 = score_match("apply token budget here", "token budget", &["token", "budget"]);
+    let score2 = score_match(
+        "apply token budget here",
+        "token budget",
+        &["token", "budget"],
+    );
     // full query substring (10) + term "token" (5) + term "budget" (5) = 20
     // (identifier split of "apply token budget here" won't match since it's a phrase, not an identifier)
     assert_eq!(score2, 20);
@@ -164,10 +168,7 @@ fn test_simple_glob_match() {
 fn test_tool_definitions_include_new_tools() {
     let defs = tool_definitions();
     let tools = defs["tools"].as_array().unwrap();
-    let names: Vec<&str> = tools
-        .iter()
-        .map(|t| t["name"].as_str().unwrap())
-        .collect();
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"get_token_estimate"));
     assert!(names.contains(&"search_relevant"));
     assert!(names.contains(&"lookup_symbol"));
@@ -418,10 +419,7 @@ fn test_word_boundary_not_partial() {
 
 #[test]
 fn test_word_boundary_with_generics() {
-    assert!(contains_word_boundary(
-        "HashMap<String, Value>",
-        "HashMap"
-    ));
+    assert!(contains_word_boundary("HashMap<String, Value>", "HashMap"));
     assert!(contains_word_boundary("Result<Cache>", "Cache"));
 }
 
@@ -538,13 +536,14 @@ fn make_test_index() -> CodebaseIndex {
 #[test]
 fn test_tool_batch_file_summaries_paths() {
     let index = make_test_index();
-    let result = tool_batch_file_summaries(&index, &json!({
-        "paths": ["src/parser.rs", "src/cache.rs"]
-    }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let result = tool_batch_file_summaries(
+        &index,
+        &json!({
+            "paths": ["src/parser.rs", "src/cache.rs"]
+        }),
+    );
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(content["count"], 2);
     assert_eq!(content["total_matched"], 2);
     let summaries = content["summaries"].as_array().unwrap();
@@ -555,10 +554,8 @@ fn test_tool_batch_file_summaries_paths() {
 fn test_tool_batch_file_summaries_glob() {
     let index = make_test_index();
     let result = tool_batch_file_summaries(&index, &json!({ "glob": "*.rs" }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(content["count"], 2);
 }
 
@@ -574,16 +571,14 @@ fn test_tool_batch_file_summaries_no_args() {
 fn test_tool_get_callers() {
     let index = make_test_index();
     let result = tool_get_callers(&index, &json!({ "symbol": "parse_file" }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     // cache.rs imports parse_file
     assert!(content["count"].as_u64().unwrap() >= 1);
     let refs = content["references"].as_array().unwrap();
-    let has_import = refs.iter().any(|r| {
-        r["match_type"] == "import" && r["file"].as_str().unwrap().contains("cache.rs")
-    });
+    let has_import = refs
+        .iter()
+        .any(|r| r["match_type"] == "import" && r["file"].as_str().unwrap().contains("cache.rs"));
     assert!(has_import, "Expected import reference from cache.rs");
 }
 
@@ -592,10 +587,8 @@ fn test_tool_get_callers_no_false_positive() {
     let index = make_test_index();
     // "get" should not match "budget" or "widget" — word-boundary matching
     let result = tool_get_callers(&index, &json!({ "symbol": "nonexistent_sym" }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(content["count"], 0);
 }
 
@@ -603,10 +596,8 @@ fn test_tool_get_callers_no_false_positive() {
 fn test_tool_get_public_api() {
     let index = make_test_index();
     let result = tool_get_public_api(&index, &json!({}));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     // Public declarations: parse_file, Cache, Cache::get
     let decls = content["declarations"].as_array().unwrap();
     let names: Vec<&str> = decls.iter().map(|d| d["name"].as_str().unwrap()).collect();
@@ -622,10 +613,8 @@ fn test_tool_get_public_api() {
 fn test_tool_get_public_api_scoped() {
     let index = make_test_index();
     let result = tool_get_public_api(&index, &json!({ "path": "src/cache.rs" }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     let decls = content["declarations"].as_array().unwrap();
     // Only cache.rs public decls
     let files: Vec<&str> = decls.iter().map(|d| d["file"].as_str().unwrap()).collect();
@@ -636,23 +625,25 @@ fn test_tool_get_public_api_scoped() {
 fn test_tool_explain_symbol() {
     let index = make_test_index();
     let result = tool_explain_symbol(&index, &json!({ "name": "parse_file" }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(content["count"], 1);
     let sym = &content["symbols"][0];
     assert_eq!(sym["name"], "parse_file");
     assert_eq!(sym["kind"], "fn");
     assert_eq!(sym["visibility"], "pub");
-    assert!(sym["doc_comment"]
-        .as_str()
-        .unwrap()
-        .contains("Parse a single"));
-    assert!(sym["signature"]
-        .as_str()
-        .unwrap()
-        .contains("Result<FileIndex>"));
+    assert!(
+        sym["doc_comment"]
+            .as_str()
+            .unwrap()
+            .contains("Parse a single")
+    );
+    assert!(
+        sym["signature"]
+            .as_str()
+            .unwrap()
+            .contains("Result<FileIndex>")
+    );
     // Has relationship
     let rels = sym["relationships"].as_array().unwrap();
     assert!(!rels.is_empty());
@@ -663,10 +654,8 @@ fn test_tool_explain_symbol() {
 fn test_tool_explain_symbol_case_insensitive() {
     let index = make_test_index();
     let result = tool_explain_symbol(&index, &json!({ "name": "CACHE" }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(content["count"], 1);
     assert_eq!(content["symbols"][0]["name"], "Cache");
 }
@@ -675,10 +664,8 @@ fn test_tool_explain_symbol_case_insensitive() {
 fn test_tool_explain_symbol_not_found() {
     let index = make_test_index();
     let result = tool_explain_symbol(&index, &json!({ "name": "nonexistent" }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(content["count"], 0);
 }
 
@@ -686,10 +673,8 @@ fn test_tool_explain_symbol_not_found() {
 fn test_tool_get_related_tests() {
     let index = make_test_index();
     let result = tool_get_related_tests(&index, &json!({ "symbol": "parse_file" }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     assert!(content["count"].as_u64().unwrap() >= 1);
     let tests = content["tests"].as_array().unwrap();
     let names: Vec<&str> = tests.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -706,10 +691,8 @@ fn test_tool_get_related_tests_scoped() {
             "path": "src/parser.rs"
         }),
     );
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     assert!(content["count"].as_u64().unwrap() >= 1);
 }
 
@@ -717,10 +700,8 @@ fn test_tool_get_related_tests_scoped() {
 fn test_tool_get_related_tests_no_match() {
     let index = make_test_index();
     let result = tool_get_related_tests(&index, &json!({ "symbol": "nonexistent" }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(content["count"], 0);
 }
 
@@ -728,10 +709,8 @@ fn test_tool_get_related_tests_no_match() {
 fn test_tool_get_token_estimate_directory() {
     let index = make_test_index();
     let result = tool_get_token_estimate(&index, &json!({ "directory": "src" }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(content["file_count"], 2);
     assert!(content["total_tokens"].as_u64().unwrap() > 0);
 }
@@ -740,10 +719,8 @@ fn test_tool_get_token_estimate_directory() {
 fn test_tool_get_token_estimate_glob() {
     let index = make_test_index();
     let result = tool_get_token_estimate(&index, &json!({ "glob": "*.rs" }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(content["file_count"], 2);
 }
 
@@ -841,14 +818,15 @@ fn test_collapse_raw_string_no_hash() {
 #[test]
 fn test_tool_lookup_symbol_compact() {
     let index = make_test_index();
-    let result = tool_lookup_symbol(&index, &json!({
-        "name": "parse_file",
-        "compact": true
-    }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let result = tool_lookup_symbol(
+        &index,
+        &json!({
+            "name": "parse_file",
+            "compact": true
+        }),
+    );
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     assert!(content["matches"].as_u64().unwrap() >= 1);
     // Compact format has columns and rows
     assert!(content["columns"].is_array());
@@ -864,10 +842,8 @@ fn test_tool_lookup_symbol_compact() {
 fn test_tool_lookup_symbol_non_compact() {
     let index = make_test_index();
     let result = tool_lookup_symbol(&index, &json!({ "name": "parse_file" }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     // Non-compact has "symbols" array of objects
     assert!(content["symbols"].is_array());
     let symbols = content["symbols"].as_array().unwrap();
@@ -878,14 +854,15 @@ fn test_tool_lookup_symbol_non_compact() {
 #[test]
 fn test_tool_list_declarations_compact() {
     let index = make_test_index();
-    let result = tool_list_declarations(&index, &json!({
-        "path": "src/parser.rs",
-        "compact": true
-    }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let result = tool_list_declarations(
+        &index,
+        &json!({
+            "path": "src/parser.rs",
+            "compact": true
+        }),
+    );
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(content["file"], "src/parser.rs");
     // Compact: declarations has columns/rows format
     let decls = &content["declarations"];
@@ -896,14 +873,15 @@ fn test_tool_list_declarations_compact() {
 #[test]
 fn test_tool_search_signatures_compact() {
     let index = make_test_index();
-    let result = tool_search_signatures(&index, &json!({
-        "query": "Result<",
-        "compact": true
-    }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let result = tool_search_signatures(
+        &index,
+        &json!({
+            "query": "Result<",
+            "compact": true
+        }),
+    );
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     assert!(content["matches"].as_u64().unwrap() >= 1);
     assert!(content["columns"].is_array());
     assert!(content["rows"].is_array());
@@ -912,14 +890,15 @@ fn test_tool_search_signatures_compact() {
 #[test]
 fn test_tool_search_relevant_compact() {
     let index = make_test_index();
-    let result = tool_search_relevant(&index, &json!({
-        "query": "parse",
-        "compact": true
-    }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let result = tool_search_relevant(
+        &index,
+        &json!({
+            "query": "parse",
+            "compact": true
+        }),
+    );
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     assert!(content["matches"].as_u64().unwrap() >= 1);
     let results_val = &content["results"];
     assert!(results_val["columns"].is_array());
@@ -934,19 +913,23 @@ fn test_tool_search_relevant_compact() {
 fn test_tool_search_relevant_kind_filter() {
     let index = make_test_index();
     // Filter to only structs
-    let result = tool_search_relevant(&index, &json!({
-        "query": "cache",
-        "kind": "struct"
-    }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let result = tool_search_relevant(
+        &index,
+        &json!({
+            "query": "cache",
+            "kind": "struct"
+        }),
+    );
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     let results_arr = content["results"].as_array().unwrap();
     // All results should be structs (no path matches since kind filter is active)
     for r in results_arr {
         if let Some(kind) = r["kind"].as_str() {
-            assert_eq!(kind, "struct", "Expected only struct results with kind filter");
+            assert_eq!(
+                kind, "struct",
+                "Expected only struct results with kind filter"
+            );
         }
     }
     // Should find the Cache struct
@@ -960,14 +943,15 @@ fn test_tool_search_relevant_kind_filter() {
 fn test_tool_search_relevant_kind_filter_fn() {
     let index = make_test_index();
     // Filter to only functions
-    let result = tool_search_relevant(&index, &json!({
-        "query": "parse",
-        "kind": "fn"
-    }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let result = tool_search_relevant(
+        &index,
+        &json!({
+            "query": "parse",
+            "kind": "fn"
+        }),
+    );
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     let results_arr = content["results"].as_array().unwrap();
     // All symbol results should be functions
     for r in results_arr {
@@ -997,23 +981,31 @@ fn test_tool_read_source_multi_symbol() {
     // Point index root at our temp dir
     index.root = dir.clone();
 
-    let result = tool_read_source(&index, &json!({
-        "path": "src/parser.rs",
-        "symbols": ["parse_file", "internal_helper"]
-    }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let result = tool_read_source(
+        &index,
+        &json!({
+            "path": "src/parser.rs",
+            "symbols": ["parse_file", "internal_helper"]
+        }),
+    );
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     let symbols = content["symbols"].as_array().unwrap();
     assert_eq!(symbols.len(), 2);
     assert_eq!(symbols[0]["symbol"], "parse_file");
     assert_eq!(symbols[1]["symbol"], "internal_helper");
-    assert!(symbols[0]["source"].as_str().unwrap().contains("parse_file"));
-    assert!(symbols[1]["source"]
-        .as_str()
-        .unwrap()
-        .contains("internal_helper"));
+    assert!(
+        symbols[0]["source"]
+            .as_str()
+            .unwrap()
+            .contains("parse_file")
+    );
+    assert!(
+        symbols[1]["source"]
+            .as_str()
+            .unwrap()
+            .contains("internal_helper")
+    );
 
     // Cleanup
     let _ = std::fs::remove_dir_all(&dir);
@@ -1036,14 +1028,15 @@ fn test_tool_read_source_multi_symbol_not_found() {
     f.write_all(source.as_bytes()).unwrap();
     index.root = dir.clone();
 
-    let result = tool_read_source(&index, &json!({
-        "path": "src/parser.rs",
-        "symbols": ["parse_file", "nonexistent_fn"]
-    }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let result = tool_read_source(
+        &index,
+        &json!({
+            "path": "src/parser.rs",
+            "symbols": ["parse_file", "nonexistent_fn"]
+        }),
+    );
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     let symbols = content["symbols"].as_array().unwrap();
     assert_eq!(symbols.len(), 1);
     assert_eq!(symbols[0]["symbol"], "parse_file");
@@ -1060,22 +1053,22 @@ fn test_tool_read_source_collapse() {
     let mut index = make_test_index();
     let dir = std::env::temp_dir().join("indxr_test_read_source_collapse");
     let _ = std::fs::create_dir_all(dir.join("src"));
-    let source =
-        "// lines 1-9\n\n\n\n\n\n\n\n\nfn parse_file() {\n    if true {\n        nested();\n    }\n}\n";
+    let source = "// lines 1-9\n\n\n\n\n\n\n\n\nfn parse_file() {\n    if true {\n        nested();\n    }\n}\n";
     let file_path = dir.join("src/parser.rs");
     let mut f = std::fs::File::create(&file_path).unwrap();
     f.write_all(source.as_bytes()).unwrap();
     index.root = dir.clone();
 
-    let result = tool_read_source(&index, &json!({
-        "path": "src/parser.rs",
-        "symbol": "parse_file",
-        "collapse": true
-    }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let result = tool_read_source(
+        &index,
+        &json!({
+            "path": "src/parser.rs",
+            "symbol": "parse_file",
+            "collapse": true
+        }),
+    );
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     let src = content["source"].as_str().unwrap();
     assert!(content["collapsed"].as_bool().unwrap());
     assert!(src.contains("{ ... }"), "Expected collapsed nested body");
@@ -1100,15 +1093,16 @@ fn test_tool_read_source_multi_symbol_collapse() {
     f.write_all(source.as_bytes()).unwrap();
     index.root = dir.clone();
 
-    let result = tool_read_source(&index, &json!({
-        "path": "src/parser.rs",
-        "symbols": ["parse_file", "internal_helper"],
-        "collapse": true
-    }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let result = tool_read_source(
+        &index,
+        &json!({
+            "path": "src/parser.rs",
+            "symbols": ["parse_file", "internal_helper"],
+            "collapse": true
+        }),
+    );
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     let symbols = content["symbols"].as_array().unwrap();
     assert_eq!(symbols.len(), 2);
     // Both should have collapsed bodies
@@ -1157,10 +1151,8 @@ fn test_tool_batch_file_summaries_cap() {
     };
 
     let result = tool_batch_file_summaries(&index, &json!({ "glob": "*.rs" }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     // Should cap at 30
     assert_eq!(content["count"], 30);
     assert_eq!(content["total_matched"], 35);
@@ -1175,10 +1167,8 @@ fn test_tool_get_callers_common_word() {
     let index = make_test_index();
     // "get" is a method on Cache — should only match word-boundary occurrences
     let result = tool_get_callers(&index, &json!({ "symbol": "get" }));
-    let content: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap();
+    let content: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     // Should not produce false positives from "budget", "widget", etc.
     let refs = content["references"].as_array().unwrap();
     for r in refs {
@@ -1186,10 +1176,7 @@ fn test_tool_get_callers_common_word() {
             if sig == "signature" {
                 // The matched signature should contain "get" at a word boundary
                 let name = r["name"].as_str().unwrap();
-                assert_ne!(
-                    name, "get",
-                    "Should not match the symbol's own declaration"
-                );
+                assert_ne!(name, "get", "Should not match the symbol's own declaration");
             }
         }
     }
