@@ -12,6 +12,7 @@ mod mcp;
 mod model;
 mod output;
 mod parser;
+mod utils;
 mod walker;
 mod watch;
 

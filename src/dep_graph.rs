@@ -4,7 +4,7 @@ use std::path::Path;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::mcp::contains_word_boundary;
+use crate::utils::contains_word_boundary;
 use crate::model::CodebaseIndex;
 use crate::model::declarations::{Declaration, RelKind};
 
@@ -168,8 +168,13 @@ fn normalize_import_separators(text: &str) -> String {
     for (byte_pos, c) in after_colons.char_indices() {
         if c == '.' {
             let rest = &after_colons[byte_pos + c.len_utf8()..];
-            let ext_len = rest.chars().take_while(|c| c.is_alphanumeric()).count();
-            let after_ext = rest.chars().nth(ext_len);
+            let ext_byte_len: usize = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric())
+                .map(|c| c.len_utf8())
+                .sum();
+            let ext_char_len = rest.chars().take_while(|c| c.is_alphanumeric()).count();
+            let after_ext = rest.chars().nth(ext_char_len);
 
             // Before a delimiter (quote, paren, whitespace): the path has ended,
             // so the dot is definitely a file extension — accept up to 5 chars.
@@ -181,9 +186,10 @@ fn normalize_import_separators(text: &str) -> String {
             let at_end = after_ext.is_none();
 
             let is_extension = if before_delimiter {
-                (1..=5).contains(&ext_len)
+                (1..=5).contains(&ext_char_len)
             } else if at_end {
-                (1..=3).contains(&ext_len) || is_known_extension(&rest[..ext_len])
+                (1..=3).contains(&ext_char_len)
+                    || is_known_extension(&rest[..ext_byte_len])
             } else {
                 false
             };
@@ -1468,6 +1474,71 @@ mod tests {
         assert_eq!(
             result.map(|p| p.to_string_lossy().to_string()),
             Some("src/config.json".to_string())
+        );
+    }
+
+    // --- Symbol graph depth=0 ---
+
+    #[test]
+    fn test_symbol_graph_depth_zero() {
+        let mut a = make_decl("A", "class A extends B");
+        a.kind = DeclKind::Class;
+        a.relationships.push(Relationship {
+            kind: RelKind::Extends,
+            target: "B".to_string(),
+        });
+
+        let mut b = make_struct("B");
+        b.kind = DeclKind::Class;
+        b.signature = "class B".to_string();
+
+        let index = make_index(vec![
+            make_file("src/a.ts", vec![], vec![a]),
+            make_file("src/b.ts", vec![], vec![b]),
+        ]);
+
+        // depth=0 from a.ts: no hops allowed, so no edges
+        let graph = build_symbol_graph(&index, Some("a.ts"), Some(0));
+        assert!(
+            graph.edges.is_empty(),
+            "depth=0 should produce no edges beyond seed set"
+        );
+    }
+
+    // --- Mermaid special character escaping ---
+
+    #[test]
+    fn test_format_mermaid_escapes_special_chars() {
+        let graph = DepGraph {
+            nodes: vec![
+                GraphNode {
+                    id: "src/foo\"bar.rs".to_string(),
+                    label: "foo\"bar.rs".to_string(),
+                    kind: NodeKind::File,
+                },
+                GraphNode {
+                    id: "src/baz]qux.rs".to_string(),
+                    label: "baz]qux.rs".to_string(),
+                    kind: NodeKind::File,
+                },
+            ],
+            edges: vec![GraphEdge {
+                from: "src/foo\"bar.rs".to_string(),
+                to: "src/baz]qux.rs".to_string(),
+                kind: EdgeKind::Imports,
+            }],
+        };
+
+        let mermaid = format_mermaid(&graph);
+        // Quotes and brackets must be escaped to avoid breaking Mermaid syntax
+        assert!(
+            mermaid.contains("#quot;"),
+            "Double quotes should be escaped"
+        );
+        assert!(mermaid.contains("#93;"), "Closing brackets should be escaped");
+        assert!(
+            !mermaid.contains("foo\"bar"),
+            "Raw double quotes should not appear in node labels"
         );
     }
 }
