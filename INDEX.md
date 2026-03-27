@@ -1,7 +1,7 @@
 # Codebase Index: indxr
 
-> Generated: 2026-03-27 06:11:51 UTC | Files: 55 | Lines: 23556
-> Languages: Markdown (16), Python (1), Rust (36), Shell (1), TOML (1)
+> Generated: 2026-03-27 07:25:58 UTC | Files: 53 | Lines: 23500
+> Languages: Markdown (14), Python (1), Rust (36), Shell (1), TOML (1)
 
 ## Directory Structure
 
@@ -23,8 +23,6 @@ indxr/
     mcp-server.md
     output-formats.md
     token-budget.md
-  linkedin-post.md
-  reddit-post.md
   roadmap.md
   src/
     budget.rs
@@ -253,12 +251,6 @@ indxr/
 - `# Public API within budget`
 - `# Scoped to a directory within budget`
 - `# Specific language within budget`
-
-**linkedin-post.md**
-- `# LinkedIn Post`
-
-**reddit-post.md**
-- `# I built a codebase indexer that gives AI coding agents a structural map instead of dumping full files into context`
 
 **roadmap.md**
 - `# indxr Roadmap`
@@ -613,22 +605,6 @@ indxr/
 ## docs/token-budget.md
 
 **Language:** Markdown | **Size:** 3.3 KB | **Lines:** 92
-
-**Declarations:**
-
----
-
-## linkedin-post.md
-
-**Language:** Markdown | **Size:** 1.6 KB | **Lines:** 32
-
-**Declarations:**
-
----
-
-## reddit-post.md
-
-**Language:** Markdown | **Size:** 1.9 KB | **Lines:** 24
 
 **Declarations:**
 
