@@ -1563,3 +1563,29 @@ fn test_tool_get_diff_summary_invalid_pr_string() {
     );
     assert!(result["isError"].as_bool().unwrap_or(false));
 }
+
+#[test]
+fn test_tool_get_diff_summary_empty_since_ref() {
+    let (index, config, registry) = make_diff_test_fixtures();
+    let args = json!({"since_ref": ""});
+    let result = tool_get_diff_summary(&index, &config, &registry, &args);
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("must not be empty"),
+        "Expected empty ref error, got: {text}"
+    );
+    assert!(result["isError"].as_bool().unwrap_or(false));
+}
+
+#[test]
+fn test_tool_get_diff_summary_whitespace_since_ref() {
+    let (index, config, registry) = make_diff_test_fixtures();
+    let args = json!({"since_ref": "   "});
+    let result = tool_get_diff_summary(&index, &config, &registry, &args);
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("must not be empty"),
+        "Expected empty ref error, got: {text}"
+    );
+    assert!(result["isError"].as_bool().unwrap_or(false));
+}

@@ -270,7 +270,7 @@ pub(super) fn tool_definitions() -> Value {
                             "description": "Git ref to diff against (branch name, tag, or commit like HEAD~3)"
                         },
                         "pr": {
-                            "type": "number",
+                            "type": "integer",
                             "description": "GitHub PR number — resolves the PR's base branch automatically (alternative to since_ref)"
                         }
                     }
@@ -1255,6 +1255,10 @@ pub(super) fn tool_get_diff_summary(
     let since_ref = if let Some(r) = resolved_ref {
         r
     } else if let Some(r) = args.get("since_ref").and_then(|v| v.as_str()) {
+        let r = r.trim();
+        if r.is_empty() {
+            return tool_error("'since_ref' must not be empty");
+        }
         r.to_string()
     } else {
         return tool_error("Missing required parameter: either 'since_ref' or 'pr'");
