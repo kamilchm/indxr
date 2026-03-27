@@ -396,7 +396,7 @@ fn claude_settings_content(include_rtk: bool) -> String {
         "matcher": "Bash",
         "hooks": [{
             "type": "command",
-            "command": "if echo \"$TOOL_INPUT\" | grep -qE 'git\\s+diff'; then echo 'IMPORTANT: Use indxr get_diff_summary MCP tool instead of git diff. It shows structural changes (added/removed/modified declarations) at ~200-500 tokens vs thousands for raw diffs. Example: get_diff_summary(since_ref: \"main\")'; fi"
+            "command": "if printf '%s' \"$TOOL_INPUT\" | grep -qE 'git\\s+diff'; then echo 'IMPORTANT: Use indxr get_diff_summary MCP tool instead of git diff. It shows structural changes (added/removed/modified declarations) at ~200-500 tokens vs thousands for raw diffs. Example: get_diff_summary(since_ref: \"main\")'; fi"
         }]
     });
 
@@ -698,5 +698,8 @@ mod tests {
         assert!(RTK_HOOK_SCRIPT.starts_with("#!/bin/bash"));
         assert!(RTK_HOOK_SCRIPT.contains("rtk rewrite"));
         assert!(RTK_HOOK_SCRIPT.contains("hookSpecificOutput"));
+        // Must use printf, not echo, for piping $TOOL_INPUT (echo mishandles flags/backslashes)
+        assert!(RTK_HOOK_SCRIPT.contains("printf '%s' \"$TOOL_INPUT\""));
+        assert!(!RTK_HOOK_SCRIPT.contains("echo \"$TOOL_INPUT\""));
     }
 }
