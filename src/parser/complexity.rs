@@ -45,7 +45,7 @@ fn collect_from_ast(
             let line = node.start_position().row + 1; // 1-indexed
             let param_count = count_params(node, source, language);
             let cyclomatic = 1 + count_branches(body, language, func_kinds);
-            let max_nesting = compute_max_nesting(body, language, func_kinds, 0);
+            let max_nesting = compute_max_nesting(body, language, func_kinds, 0, false);
 
             metrics.insert(
                 line,
@@ -186,23 +186,52 @@ fn compute_max_nesting(
     language: &Language,
     func_kinds: &[&str],
     depth: usize,
+    is_else_if: bool,
 ) -> usize {
     let kind = node.kind();
-    let new_depth = if nesting_node_kinds(language).contains(&kind) {
+    let is_if = kind == "if_expression" || kind == "if_statement";
+    let new_depth = if nesting_node_kinds(language).contains(&kind) && !(is_if && is_else_if) {
         depth + 1
     } else {
         depth
     };
 
     let mut max = new_depth;
+
+    // Pre-compute the alternative child of this node (if it's an if node).
+    // In Go, `else if` is a direct if_statement child in the "alternative" field
+    // with no wrapping else_clause.
+    let alt_id = if is_if {
+        node.child_by_field_name("alternative").map(|n| n.id())
+    } else {
+        None
+    };
+
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             if !func_kinds.contains(&child.kind()) {
-                max = max.max(compute_max_nesting(child, language, func_kinds, new_depth));
+                let child_is_if = child.kind() == "if_expression" || child.kind() == "if_statement";
+                // Detect else-if: an if node inside an else_clause/else container,
+                // OR an if node that is the "alternative" field of a parent if (Go).
+                let child_is_else_if = child_is_if
+                    && (is_else_alternative(node) || alt_id.is_some_and(|id| id == child.id()));
+                max = max.max(compute_max_nesting(
+                    child,
+                    language,
+                    func_kinds,
+                    new_depth,
+                    child_is_else_if,
+                ));
             }
         }
     }
     max
+}
+
+/// Returns true if `node` is an else/alternative container (else_clause, else, etc.)
+fn is_else_alternative(node: tree_sitter::Node<'_>) -> bool {
+    let kind = node.kind();
+    kind == "else_clause" || kind == "else"
 }
 
 // ---------------------------------------------------------------------------
@@ -226,7 +255,11 @@ fn function_node_kinds(language: &Language) -> &'static [&'static str] {
             "function_expression",
         ],
         Language::Go => &["function_declaration", "method_declaration", "func_literal"],
-        Language::Java => &["method_declaration", "constructor_declaration", "lambda_expression"],
+        Language::Java => &[
+            "method_declaration",
+            "constructor_declaration",
+            "lambda_expression",
+        ],
         Language::C => &["function_definition"],
         Language::Cpp => &["function_definition", "lambda_expression"],
         _ => &[],
@@ -661,7 +694,7 @@ class Util {
         assert_eq!(c.param_count, 3);
         // 1 base + if + else-if(if) = 3
         assert_eq!(c.cyclomatic, 3);
-        assert_eq!(c.max_nesting, 2); // else-if is a nested if_statement in tree-sitter
+        assert_eq!(c.max_nesting, 1); // else-if is flat, not nested
     }
 
     #[test]
@@ -713,5 +746,94 @@ fn outer(x: i32) -> i32 {
         // outer has: 1 base + 1 if = 2
         assert_eq!(c.cyclomatic, 2, "cyclomatic={}", c.cyclomatic);
         assert_eq!(c.max_nesting, 1, "nesting={}", c.max_nesting);
+    }
+
+    #[test]
+    fn rust_else_if_chain_nesting() {
+        let src = r#"
+fn classify(x: i32) -> &'static str {
+    if x > 100 {
+        "large"
+    } else if x > 10 {
+        "medium"
+    } else if x > 0 {
+        "small"
+    } else {
+        "non-positive"
+    }
+}
+"#;
+        let decls = parse_and_annotate(src, Language::Rust);
+        let c = get_complexity(&decls, "classify").expect("should have complexity");
+        // Flat else-if chain should NOT inflate nesting — depth is 1, not 3
+        assert_eq!(c.max_nesting, 1, "nesting={}", c.max_nesting);
+        // if + else-if + else-if = 3 branches, base 1 = 4
+        assert_eq!(c.cyclomatic, 4, "cyclomatic={}", c.cyclomatic);
+    }
+
+    #[test]
+    fn typescript_else_if_chain_nesting() {
+        let src = r#"
+function classify(x: number): string {
+    if (x > 100) {
+        return "large";
+    } else if (x > 10) {
+        return "medium";
+    } else if (x > 0) {
+        return "small";
+    } else {
+        return "non-positive";
+    }
+}
+"#;
+        let decls = parse_and_annotate(src, Language::TypeScript);
+        let c = get_complexity(&decls, "classify").expect("should have complexity");
+        assert_eq!(c.max_nesting, 1, "nesting={}", c.max_nesting);
+    }
+
+    #[test]
+    fn go_else_if_chain_nesting() {
+        let src = r#"
+package main
+
+func classify(x int) string {
+    if x > 100 {
+        return "large"
+    } else if x > 10 {
+        return "medium"
+    } else if x > 0 {
+        return "small"
+    } else {
+        return "non-positive"
+    }
+}
+"#;
+        let decls = parse_and_annotate(src, Language::Go);
+        let c = get_complexity(&decls, "classify").expect("should have complexity");
+        assert_eq!(c.max_nesting, 1, "nesting={}", c.max_nesting);
+    }
+
+    #[test]
+    fn rust_nested_if_inside_else_if_still_counts() {
+        let src = r#"
+fn check(x: i32, y: i32) -> &'static str {
+    if x > 0 {
+        "positive"
+    } else if y > 0 {
+        if y > 100 {
+            "y-large"
+        } else {
+            "y-small"
+        }
+    } else {
+        "both-non-positive"
+    }
+}
+"#;
+        let decls = parse_and_annotate(src, Language::Rust);
+        let c = get_complexity(&decls, "check").expect("should have complexity");
+        // else-if doesn't add nesting, but the nested if inside the else-if body does:
+        // if (depth 1) → else if (still depth 1) → if (depth 2)
+        assert_eq!(c.max_nesting, 2, "nesting={}", c.max_nesting);
     }
 }

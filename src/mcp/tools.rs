@@ -1596,15 +1596,33 @@ pub(super) fn tool_get_hotspots(index: &CodebaseIndex, args: &Value) -> Value {
 
     let mut entries = collect_hotspots(index, path_filter, min_complexity);
 
+    let tiebreak = |a: &crate::parser::complexity::HotspotEntry,
+                    b: &crate::parser::complexity::HotspotEntry| {
+        a.file.cmp(&b.file).then(a.line.cmp(&b.line))
+    };
+
     match sort_by {
-        "complexity" => entries.sort_by(|a, b| b.cyclomatic.cmp(&a.cyclomatic)),
-        "nesting" => entries.sort_by(|a, b| b.max_nesting.cmp(&a.max_nesting)),
-        "params" => entries.sort_by(|a, b| b.param_count.cmp(&a.param_count)),
-        "body_lines" => entries.sort_by(|a, b| b.body_lines.cmp(&a.body_lines)),
+        "complexity" => {
+            entries.sort_by(|a, b| b.cyclomatic.cmp(&a.cyclomatic).then_with(|| tiebreak(a, b)))
+        }
+        "nesting" => entries.sort_by(|a, b| {
+            b.max_nesting
+                .cmp(&a.max_nesting)
+                .then_with(|| tiebreak(a, b))
+        }),
+        "params" => entries.sort_by(|a, b| {
+            b.param_count
+                .cmp(&a.param_count)
+                .then_with(|| tiebreak(a, b))
+        }),
+        "body_lines" => {
+            entries.sort_by(|a, b| b.body_lines.cmp(&a.body_lines).then_with(|| tiebreak(a, b)))
+        }
         _ => entries.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| tiebreak(a, b))
         }),
     }
 
@@ -1667,10 +1685,7 @@ impl HealthAccumulator {
 
     fn collect(&mut self, file_path: &str, decls: &[Declaration]) {
         for decl in decls {
-            let is_func = matches!(
-                decl.kind,
-                DeclKind::Function | DeclKind::Method
-            );
+            let is_func = matches!(decl.kind, DeclKind::Function | DeclKind::Method);
 
             if is_func {
                 self.total_functions += 1;
@@ -1739,7 +1754,8 @@ pub(super) fn tool_get_health(index: &CodebaseIndex, args: &Value) -> Value {
     let p90_cc = if acc.cc_values.is_empty() {
         0
     } else {
-        acc.cc_values[(((acc.cc_values.len() - 1) as f64 * 0.9) as usize).min(acc.cc_values.len() - 1)]
+        acc.cc_values
+            [(((acc.cc_values.len() - 1) as f64 * 0.9) as usize).min(acc.cc_values.len() - 1)]
     };
     let max_cc = acc.cc_values.last().copied().unwrap_or(0);
     let avg_cc = if acc.cc_values.is_empty() {
