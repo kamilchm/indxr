@@ -1232,17 +1232,17 @@ pub(super) fn tool_get_diff_summary(
     args: &Value,
 ) -> Value {
     // Resolve the git ref — either from a PR number or a direct since_ref
-    let pr_info = if let Some(pr_num) = args.get("pr").and_then(|v| v.as_u64()) {
+    let (resolved_ref, pr_info) = if let Some(pr_num) = args.get("pr").and_then(|v| v.as_u64()) {
         match github::resolve_pr_base(&config.root, pr_num) {
-            Ok((_, info)) => Some(info),
+            Ok((local_ref, info)) => (Some(local_ref), Some(info)),
             Err(e) => return tool_error(&format!("Failed to resolve PR #{}: {}", pr_num, e)),
         }
     } else {
-        None
+        (None, None)
     };
 
-    let since_ref = if let Some(ref info) = pr_info {
-        format!("origin/{}", info.base_ref)
+    let since_ref = if let Some(r) = resolved_ref {
+        r
     } else if let Some(r) = args.get("since_ref").and_then(|v| v.as_str()) {
         r.to_string()
     } else {

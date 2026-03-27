@@ -1,5 +1,7 @@
 use std::path::Path;
 use std::process::Command;
+use std::sync::LazyLock;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -8,7 +10,6 @@ use serde::Deserialize;
 struct GitHubPullResponse {
     number: u64,
     title: String,
-    state: String,
     base: GitHubRef,
     head: GitHubRef,
 }
@@ -26,7 +27,6 @@ pub struct PrInfo {
     pub title: String,
     pub base_ref: String,
     pub head_ref: String,
-    pub state: String,
 }
 
 /// Resolve a GitHub PR number to a local git ref for its base branch.
@@ -89,10 +89,12 @@ fn detect_github_repo(root: &Path) -> Result<(String, String)> {
     parse_github_url(&url)
 }
 
+static GITHUB_URL_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"github\.com[:/]([^/]+)/([^/.]+)").unwrap());
+
 /// Parse a GitHub URL (HTTPS or SSH) into `(owner, repo)`.
 fn parse_github_url(url: &str) -> Result<(String, String)> {
-    let re = regex::Regex::new(r"github\.com[:/]([^/]+)/([^/.]+)").unwrap();
-    let caps = re
+    let caps = GITHUB_URL_RE
         .captures(url)
         .with_context(|| format!("Remote 'origin' is not a GitHub URL: {url}"))?;
     Ok((caps[1].to_string(), caps[2].to_string()))
@@ -106,6 +108,7 @@ fn fetch_pr_info(owner: &str, repo: &str, pr_number: u64, token: &str) -> Result
         .set("Authorization", &format!("Bearer {token}"))
         .set("Accept", "application/vnd.github+json")
         .set("User-Agent", "indxr")
+        .timeout(Duration::from_secs(10))
         .call();
 
     match response {
@@ -118,7 +121,6 @@ fn fetch_pr_info(owner: &str, repo: &str, pr_number: u64, token: &str) -> Result
                 title: pr.title,
                 base_ref: pr.base.ref_name,
                 head_ref: pr.head.ref_name,
-                state: pr.state,
             })
         }
         Err(ureq::Error::Status(404, _)) => {
