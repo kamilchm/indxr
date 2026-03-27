@@ -11,6 +11,7 @@ use crate::model::{CodebaseIndex, FileIndex, Import, IndexStats};
 
 use super::helpers::*;
 use super::tools::*;
+use super::type_flow::*;
 
 // -----------------------------------------------------------------------
 // score_match tests
@@ -185,8 +186,9 @@ fn test_tool_definitions_include_new_tools() {
     assert!(names.contains(&"get_dependency_graph"));
     assert!(names.contains(&"get_hotspots"));
     assert!(names.contains(&"get_health"));
-    // Total: 12 original + 9 new = 21
-    assert_eq!(names.len(), 21);
+    assert!(names.contains(&"get_type_flow"));
+    // Total: 12 original + 10 new = 22
+    assert_eq!(names.len(), 22);
 }
 
 // -----------------------------------------------------------------------
@@ -506,6 +508,13 @@ fn make_test_index() -> CodebaseIndex {
             "pub fn get(&self, key: &str) -> Option<&Value>".to_string(),
             Visibility::Public,
             8,
+        ));
+        d.children.push(Declaration::new(
+            DeclKind::Field,
+            "entries".to_string(),
+            "HashMap<PathBuf, FileIndex>".to_string(),
+            Visibility::Private,
+            6,
         ));
         d
     };
@@ -1588,4 +1597,414 @@ fn test_tool_get_diff_summary_whitespace_since_ref() {
         "Expected empty ref error, got: {text}"
     );
     assert!(result["isError"].as_bool().unwrap_or(false));
+}
+
+// -----------------------------------------------------------------------
+// Type extraction unit tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_extract_types_rust_function() {
+    let sig = "pub fn parse_file(path: &Path, content: &str) -> Result<FileIndex>";
+    let info = extract_types_from_signature(sig, &Language::Rust);
+    assert!(info.param_types.contains(&"Path".to_string()));
+    // &str is primitive, should be filtered
+    assert!(
+        !info
+            .param_types
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case("str"))
+    );
+    assert!(info.return_types.contains(&"Result".to_string()));
+    assert!(info.return_types.contains(&"FileIndex".to_string()));
+}
+
+#[test]
+fn test_extract_types_rust_method() {
+    let sig = "pub fn get(&self, key: &str) -> Option<&Value>";
+    let info = extract_types_from_signature(sig, &Language::Rust);
+    assert!(info.return_types.contains(&"Option".to_string()));
+    assert!(info.return_types.contains(&"Value".to_string()));
+}
+
+#[test]
+fn test_extract_types_rust_no_return() {
+    let sig = "pub fn process(data: Vec<Item>)";
+    let info = extract_types_from_signature(sig, &Language::Rust);
+    assert!(info.param_types.contains(&"Vec".to_string()));
+    assert!(info.param_types.contains(&"Item".to_string()));
+    assert!(info.return_types.is_empty());
+}
+
+#[test]
+fn test_extract_types_go_function() {
+    let sig = "func ParseFile(path string) (*FileIndex, error)";
+    let info = extract_types_from_signature(sig, &Language::Go);
+    assert!(info.return_types.contains(&"FileIndex".to_string()));
+    // error is primitive
+    assert!(
+        !info
+            .return_types
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case("error"))
+    );
+}
+
+#[test]
+fn test_extract_types_go_method() {
+    let sig = "func (s *Server) Handle(req Request) Response";
+    let info = extract_types_from_signature(sig, &Language::Go);
+    assert!(info.param_types.contains(&"Request".to_string()));
+    assert!(info.return_types.contains(&"Response".to_string()));
+}
+
+#[test]
+fn test_extract_types_typescript() {
+    let sig = "function parseFile(path: string): FileIndex";
+    let info = extract_types_from_signature(sig, &Language::TypeScript);
+    assert!(info.return_types.contains(&"FileIndex".to_string()));
+    // string is primitive
+    assert!(
+        !info
+            .param_types
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case("string"))
+    );
+}
+
+#[test]
+fn test_extract_types_typescript_promise() {
+    let sig = "async function fetchData(url: string): Promise<Response>";
+    let info = extract_types_from_signature(sig, &Language::TypeScript);
+    assert!(info.return_types.contains(&"Promise".to_string()));
+    assert!(info.return_types.contains(&"Response".to_string()));
+}
+
+#[test]
+fn test_extract_types_python() {
+    let sig = "def parse_file(path: Path, content: str) -> FileIndex";
+    let info = extract_types_from_signature(sig, &Language::Python);
+    assert!(info.param_types.contains(&"Path".to_string()));
+    assert!(info.return_types.contains(&"FileIndex".to_string()));
+}
+
+#[test]
+fn test_extract_types_python_optional() {
+    let sig = "def find_item(name: str, cache: Optional[Cache]) -> Optional[Item]";
+    let info = extract_types_from_signature(sig, &Language::Python);
+    assert!(info.param_types.contains(&"Optional".to_string()));
+    assert!(info.param_types.contains(&"Cache".to_string()));
+    assert!(info.return_types.contains(&"Item".to_string()));
+}
+
+#[test]
+fn test_extract_types_java() {
+    let sig = "public Result<FileIndex> parseFile(Path path)";
+    let info = extract_types_from_signature(sig, &Language::Java);
+    assert!(info.return_types.contains(&"Result".to_string()));
+    assert!(info.return_types.contains(&"FileIndex".to_string()));
+    assert!(info.param_types.contains(&"Path".to_string()));
+}
+
+#[test]
+fn test_extract_types_kotlin() {
+    let sig = "fun parseFile(path: Path): FileIndex";
+    let info = extract_types_from_signature(sig, &Language::Kotlin);
+    assert!(info.param_types.contains(&"Path".to_string()));
+    assert!(info.return_types.contains(&"FileIndex".to_string()));
+}
+
+#[test]
+fn test_extract_types_swift() {
+    let sig = "func parseFile(at path: Path) -> FileIndex";
+    let info = extract_types_from_signature(sig, &Language::Swift);
+    assert!(info.param_types.contains(&"Path".to_string()));
+    assert!(info.return_types.contains(&"FileIndex".to_string()));
+}
+
+#[test]
+fn test_extract_types_empty_signature() {
+    let sig = "";
+    let info = extract_types_from_signature(sig, &Language::Rust);
+    assert!(info.param_types.is_empty());
+    assert!(info.return_types.is_empty());
+}
+
+#[test]
+fn test_extract_types_ruby_no_types() {
+    let sig = "def parse_file(path, content)";
+    let info = extract_types_from_signature(sig, &Language::Ruby);
+    assert!(info.param_types.is_empty());
+    assert!(info.return_types.is_empty());
+}
+
+// -----------------------------------------------------------------------
+// get_type_flow tool integration tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_tool_get_type_flow_producers() {
+    let index = make_test_index();
+    let result = tool_get_type_flow(&index, &json!({ "type_name": "FileIndex" }));
+    let text = result["content"][0]["text"].as_str().unwrap();
+    let content: Value = serde_json::from_str(text).unwrap();
+
+    // parse_file returns Result<FileIndex> → producer
+    assert!(content["producers_count"].as_u64().unwrap() >= 1);
+    let producers = content["producers"].as_array().unwrap();
+    let names: Vec<&str> = producers
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"parse_file"),
+        "Expected parse_file as producer, got: {:?}",
+        names
+    );
+}
+
+#[test]
+fn test_tool_get_type_flow_consumers() {
+    // The test index has: Cache.get(&self, key: &str) -> Option<&Value>
+    // Value is consumed... but actually it's a return type.
+    // parse_file(path: &Path) -> Path is a param → consumer
+    let index = make_test_index();
+    let result = tool_get_type_flow(&index, &json!({ "type_name": "Path" }));
+    let text = result["content"][0]["text"].as_str().unwrap();
+    let content: Value = serde_json::from_str(text).unwrap();
+
+    assert!(
+        content["consumers_count"].as_u64().unwrap() >= 1,
+        "Expected at least 1 consumer of Path"
+    );
+}
+
+#[test]
+fn test_tool_get_type_flow_not_found() {
+    let index = make_test_index();
+    let result = tool_get_type_flow(&index, &json!({ "type_name": "NonexistentType" }));
+    let text = result["content"][0]["text"].as_str().unwrap();
+    let content: Value = serde_json::from_str(text).unwrap();
+
+    assert_eq!(content["producers_count"], 0);
+    assert_eq!(content["consumers_count"], 0);
+}
+
+#[test]
+fn test_tool_get_type_flow_case_insensitive() {
+    let index = make_test_index();
+    let result = tool_get_type_flow(&index, &json!({ "type_name": "fileindex" }));
+    let text = result["content"][0]["text"].as_str().unwrap();
+    let content: Value = serde_json::from_str(text).unwrap();
+
+    assert!(content["producers_count"].as_u64().unwrap() >= 1);
+}
+
+#[test]
+fn test_tool_get_type_flow_compact() {
+    let index = make_test_index();
+    let result = tool_get_type_flow(
+        &index,
+        &json!({ "type_name": "FileIndex", "compact": true }),
+    );
+    let text = result["content"][0]["text"].as_str().unwrap();
+    let content: Value = serde_json::from_str(text).unwrap();
+
+    // Compact mode should have columns/rows format
+    assert!(content["producers"].get("columns").is_some());
+    assert!(content["consumers"].get("columns").is_some());
+}
+
+#[test]
+fn test_tool_get_type_flow_path_filter() {
+    let index = make_test_index();
+    let result = tool_get_type_flow(
+        &index,
+        &json!({ "type_name": "FileIndex", "path": "src/cache" }),
+    );
+    let text = result["content"][0]["text"].as_str().unwrap();
+    let content: Value = serde_json::from_str(text).unwrap();
+
+    // cache.rs doesn't produce FileIndex, so no producers from that path
+    assert_eq!(content["producers_count"], 0);
+}
+
+#[test]
+fn test_tool_get_type_flow_missing_param() {
+    let index = make_test_index();
+    let result = tool_get_type_flow(&index, &json!({}));
+    assert!(result["isError"].as_bool().unwrap_or(false));
+}
+
+#[test]
+fn test_tool_get_type_flow_whitespace_only_param() {
+    let index = make_test_index();
+    let result = tool_get_type_flow(&index, &json!({ "type_name": "   " }));
+    assert!(result["isError"].as_bool().unwrap_or(false));
+}
+
+#[test]
+fn test_tool_get_type_flow_with_limit() {
+    let index = make_test_index();
+    let result = tool_get_type_flow(&index, &json!({ "type_name": "FileIndex", "limit": 1 }));
+    let text = result["content"][0]["text"].as_str().unwrap();
+    let content: Value = serde_json::from_str(text).unwrap();
+
+    let producers = content["producers"].as_array().unwrap();
+    assert!(producers.len() <= 1);
+}
+
+#[test]
+fn test_tool_get_type_flow_include_fields() {
+    let index = make_test_index();
+    // Without include_fields, the Cache.entries field should not appear
+    let result = tool_get_type_flow(&index, &json!({ "type_name": "FileIndex" }));
+    let text = result["content"][0]["text"].as_str().unwrap();
+    let content: Value = serde_json::from_str(text).unwrap();
+    let consumers = content["consumers"].as_array().unwrap();
+    let field_names: Vec<&str> = consumers
+        .iter()
+        .filter(|c| c["kind"].as_str().unwrap() == "field")
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        !field_names.contains(&"entries"),
+        "Field should not appear without include_fields"
+    );
+
+    // With include_fields, the Cache.entries field should appear as a consumer
+    let result = tool_get_type_flow(
+        &index,
+        &json!({ "type_name": "FileIndex", "include_fields": true }),
+    );
+    let text = result["content"][0]["text"].as_str().unwrap();
+    let content: Value = serde_json::from_str(text).unwrap();
+    let consumers = content["consumers"].as_array().unwrap();
+    let field_names: Vec<&str> = consumers
+        .iter()
+        .filter(|c| c["kind"].as_str().unwrap() == "field")
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        field_names.contains(&"entries"),
+        "Expected entries field as consumer with include_fields, got: {:?}",
+        field_names
+    );
+}
+
+#[test]
+fn test_extract_types_c_function() {
+    let sig = "int* create_buffer(size_t len)";
+    let info = extract_types_from_signature(sig, &Language::C);
+    assert!(
+        info.param_types.contains(&"size_t".to_string()),
+        "Expected size_t in params, got: {:?}",
+        info.param_types
+    );
+    // "int" is primitive, but pointer return type — the identifier is "int" which is filtered
+    // The function name is "create_buffer", return type token before it is "int*"
+    // After normalize: "int" is primitive so filtered out
+}
+
+#[test]
+fn test_extract_types_c_struct_return() {
+    let sig = "FileIndex* parse_file(const char* path)";
+    let info = extract_types_from_signature(sig, &Language::C);
+    assert!(
+        info.return_types.contains(&"FileIndex".to_string()),
+        "Expected FileIndex in return types, got: {:?}",
+        info.return_types
+    );
+}
+
+#[test]
+fn test_extract_types_cpp_method() {
+    let sig = "virtual std::vector<Node> getChildren(TreeNode* root)";
+    let info = extract_types_from_signature(sig, &Language::Cpp);
+    assert!(
+        info.return_types.contains(&"vector".to_string()),
+        "Expected vector in return types, got: {:?}",
+        info.return_types
+    );
+    assert!(
+        info.return_types.contains(&"Node".to_string()),
+        "Expected Node in return types, got: {:?}",
+        info.return_types
+    );
+    assert!(
+        info.param_types.contains(&"TreeNode".to_string()),
+        "Expected TreeNode in param types, got: {:?}",
+        info.param_types
+    );
+}
+
+#[test]
+fn test_extract_types_go_no_receiver_multi_return() {
+    let sig = "func ParseFiles(paths []string) ([]FileIndex, error)";
+    let info = extract_types_from_signature(sig, &Language::Go);
+    assert!(
+        info.return_types.contains(&"FileIndex".to_string()),
+        "Expected FileIndex in return types, got: {:?}",
+        info.return_types
+    );
+    // error is primitive, should be filtered
+    assert!(
+        !info
+            .return_types
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case("error"))
+    );
+}
+
+#[test]
+fn test_extract_types_go_receiver_with_multi_return() {
+    let sig = "func (s *Server) Handle(req Request) (Response, error)";
+    let info = extract_types_from_signature(sig, &Language::Go);
+    assert!(
+        info.param_types.contains(&"Request".to_string()),
+        "Expected Request in param types, got: {:?}",
+        info.param_types
+    );
+    assert!(
+        info.return_types.contains(&"Response".to_string()),
+        "Expected Response in return types, got: {:?}",
+        info.return_types
+    );
+}
+
+#[test]
+fn test_extract_types_rust_nested_generics() {
+    let sig = "pub fn parse(data: &str) -> Result<Vec<FileIndex>, Error>";
+    let info = extract_types_from_signature(sig, &Language::Rust);
+    assert!(
+        info.return_types.contains(&"Result".to_string()),
+        "Expected Result in return types, got: {:?}",
+        info.return_types
+    );
+    assert!(
+        info.return_types.contains(&"Vec".to_string()),
+        "Expected Vec in return types, got: {:?}",
+        info.return_types
+    );
+    assert!(
+        info.return_types.contains(&"FileIndex".to_string()),
+        "Expected FileIndex in return types, got: {:?}",
+        info.return_types
+    );
+}
+
+#[test]
+fn test_tool_get_type_flow_producer_and_consumer() {
+    // Path is both a param type (consumer) and could be a return type (producer)
+    // in the test index: parse_file(path: &Path) → consumes Path
+    let index = make_test_index();
+    let result = tool_get_type_flow(&index, &json!({ "type_name": "Value" }));
+    let text = result["content"][0]["text"].as_str().unwrap();
+    let content: Value = serde_json::from_str(text).unwrap();
+
+    // Cache.get returns Option<&Value> → producer
+    assert!(
+        content["producers_count"].as_u64().unwrap() >= 1,
+        "Expected at least 1 producer of Value"
+    );
 }
