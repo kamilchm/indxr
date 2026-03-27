@@ -11,6 +11,7 @@ use crate::model::{CodebaseIndex, FileIndex, Import, IndexStats};
 
 use super::helpers::*;
 use super::tools::*;
+use super::type_flow::*;
 
 // -----------------------------------------------------------------------
 // score_match tests
@@ -507,6 +508,13 @@ fn make_test_index() -> CodebaseIndex {
             "pub fn get(&self, key: &str) -> Option<&Value>".to_string(),
             Visibility::Public,
             8,
+        ));
+        d.children.push(Declaration::new(
+            DeclKind::Field,
+            "entries".to_string(),
+            "HashMap<PathBuf, FileIndex>".to_string(),
+            Visibility::Private,
+            6,
         ));
         d
     };
@@ -1839,4 +1847,88 @@ fn test_tool_get_type_flow_with_limit() {
 
     let producers = content["producers"].as_array().unwrap();
     assert!(producers.len() <= 1);
+}
+
+#[test]
+fn test_tool_get_type_flow_include_fields() {
+    let index = make_test_index();
+    // Without include_fields, the Cache.entries field should not appear
+    let result = tool_get_type_flow(&index, &json!({ "type_name": "FileIndex" }));
+    let text = result["content"][0]["text"].as_str().unwrap();
+    let content: Value = serde_json::from_str(text).unwrap();
+    let consumers = content["consumers"].as_array().unwrap();
+    let field_names: Vec<&str> = consumers
+        .iter()
+        .filter(|c| c["kind"].as_str().unwrap() == "field")
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        !field_names.contains(&"entries"),
+        "Field should not appear without include_fields"
+    );
+
+    // With include_fields, the Cache.entries field should appear as a consumer
+    let result = tool_get_type_flow(
+        &index,
+        &json!({ "type_name": "FileIndex", "include_fields": true }),
+    );
+    let text = result["content"][0]["text"].as_str().unwrap();
+    let content: Value = serde_json::from_str(text).unwrap();
+    let consumers = content["consumers"].as_array().unwrap();
+    let field_names: Vec<&str> = consumers
+        .iter()
+        .filter(|c| c["kind"].as_str().unwrap() == "field")
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        field_names.contains(&"entries"),
+        "Expected entries field as consumer with include_fields, got: {:?}",
+        field_names
+    );
+}
+
+#[test]
+fn test_extract_types_c_function() {
+    let sig = "int* create_buffer(size_t len)";
+    let info = extract_types_from_signature(sig, &Language::C);
+    assert!(
+        info.param_types.contains(&"size_t".to_string()),
+        "Expected size_t in params, got: {:?}",
+        info.param_types
+    );
+    // "int" is primitive, but pointer return type — the identifier is "int" which is filtered
+    // The function name is "create_buffer", return type token before it is "int*"
+    // After normalize: "int" is primitive so filtered out
+}
+
+#[test]
+fn test_extract_types_c_struct_return() {
+    let sig = "FileIndex* parse_file(const char* path)";
+    let info = extract_types_from_signature(sig, &Language::C);
+    assert!(
+        info.return_types.contains(&"FileIndex".to_string()),
+        "Expected FileIndex in return types, got: {:?}",
+        info.return_types
+    );
+}
+
+#[test]
+fn test_extract_types_cpp_method() {
+    let sig = "virtual std::vector<Node> getChildren(TreeNode* root)";
+    let info = extract_types_from_signature(sig, &Language::Cpp);
+    assert!(
+        info.return_types.contains(&"vector".to_string()),
+        "Expected vector in return types, got: {:?}",
+        info.return_types
+    );
+    assert!(
+        info.return_types.contains(&"Node".to_string()),
+        "Expected Node in return types, got: {:?}",
+        info.return_types
+    );
+    assert!(
+        info.param_types.contains(&"TreeNode".to_string()),
+        "Expected TreeNode in param types, got: {:?}",
+        info.param_types
+    );
 }

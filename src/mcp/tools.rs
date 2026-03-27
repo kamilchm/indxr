@@ -16,6 +16,7 @@ use crate::parser::ParserRegistry;
 use crate::parser::complexity::{collect_hotspots, compute_health, sort_hotspots};
 
 use super::helpers::*;
+use super::type_flow::*;
 
 // ---------------------------------------------------------------------------
 // Tool definitions for tools/list
