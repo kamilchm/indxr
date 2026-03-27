@@ -127,10 +127,9 @@ fn main() -> Result<()> {
                 pr_info.number, pr_info.title, pr_info.base_ref, pr_info.head_ref
             );
             base_ref
-        } else if let Some(git_ref) = since {
-            git_ref.clone()
         } else {
-            anyhow::bail!("Either --pr or --since must be specified");
+            // Safe to unwrap: clap ArgGroup ensures one of --pr/--since is present
+            since.clone().unwrap()
         };
 
         // Build index for the project

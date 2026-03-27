@@ -1464,3 +1464,102 @@ fn test_tool_get_health_empty_codebase() {
     assert_eq!(content["high_complexity_count"], 0);
     assert_eq!(content["documented_pct"], 0.0);
 }
+
+// -----------------------------------------------------------------------
+// get_diff_summary validation tests
+// -----------------------------------------------------------------------
+
+fn make_diff_test_fixtures() -> (
+    CodebaseIndex,
+    crate::indexer::IndexConfig,
+    crate::parser::ParserRegistry,
+) {
+    let index = CodebaseIndex {
+        root: PathBuf::from("/tmp/test"),
+        root_name: "test".to_string(),
+        generated_at: String::new(),
+        stats: IndexStats {
+            total_files: 0,
+            total_lines: 0,
+            languages: HashMap::new(),
+            duration_ms: 0,
+        },
+        tree: vec![],
+        files: vec![],
+    };
+    let config = crate::indexer::IndexConfig {
+        root: PathBuf::from("/tmp/test"),
+        cache_dir: PathBuf::from("/tmp/test/.cache"),
+        max_file_size: 512,
+        max_depth: None,
+        exclude: vec![],
+        no_gitignore: false,
+    };
+    let registry = crate::parser::ParserRegistry::new();
+    (index, config, registry)
+}
+
+#[test]
+fn test_tool_get_diff_summary_both_params_error() {
+    let (index, config, registry) = make_diff_test_fixtures();
+    let args = json!({"since_ref": "main", "pr": 42});
+    let result = tool_get_diff_summary(&index, &config, &registry, &args);
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("not both"),
+        "Expected mutual exclusion error, got: {text}"
+    );
+    assert!(result["isError"].as_bool().unwrap_or(false));
+}
+
+#[test]
+fn test_tool_get_diff_summary_neither_param_error() {
+    let (index, config, registry) = make_diff_test_fixtures();
+    let args = json!({});
+    let result = tool_get_diff_summary(&index, &config, &registry, &args);
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("since_ref") && text.contains("pr"),
+        "Expected missing param error, got: {text}"
+    );
+    assert!(result["isError"].as_bool().unwrap_or(false));
+}
+
+#[test]
+fn test_tool_get_diff_summary_invalid_pr_zero() {
+    let (index, config, registry) = make_diff_test_fixtures();
+    let args = json!({"pr": 0});
+    let result = tool_get_diff_summary(&index, &config, &registry, &args);
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("positive integer"),
+        "Expected positive integer error, got: {text}"
+    );
+    assert!(result["isError"].as_bool().unwrap_or(false));
+}
+
+#[test]
+fn test_tool_get_diff_summary_invalid_pr_negative() {
+    let (index, config, registry) = make_diff_test_fixtures();
+    let args = json!({"pr": -1});
+    let result = tool_get_diff_summary(&index, &config, &registry, &args);
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("positive integer"),
+        "Expected positive integer error, got: {text}"
+    );
+    assert!(result["isError"].as_bool().unwrap_or(false));
+}
+
+#[test]
+fn test_tool_get_diff_summary_invalid_pr_string() {
+    let (index, config, registry) = make_diff_test_fixtures();
+    let args = json!({"pr": "not-a-number"});
+    let result = tool_get_diff_summary(&index, &config, &registry, &args);
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("positive integer"),
+        "Expected positive integer error, got: {text}"
+    );
+    assert!(result["isError"].as_bool().unwrap_or(false));
+}

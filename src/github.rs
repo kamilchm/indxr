@@ -146,7 +146,7 @@ fn resolve_base_ref(root: &Path, base_branch: &str) -> Result<String> {
 
     // Check if origin/<branch> exists locally
     let status = Command::new("git")
-        .args(["rev-parse", "--verify", &remote_ref])
+        .args(["rev-parse", "--verify", "--", &remote_ref])
         .current_dir(root)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -160,7 +160,7 @@ fn resolve_base_ref(root: &Path, base_branch: &str) -> Result<String> {
 
     // Check if bare branch name exists locally
     let status = Command::new("git")
-        .args(["rev-parse", "--verify", base_branch])
+        .args(["rev-parse", "--verify", "--", base_branch])
         .current_dir(root)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

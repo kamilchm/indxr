@@ -180,6 +180,7 @@ pub enum Command {
     },
 
     /// Show structural changes for a GitHub PR or git ref
+    #[command(group(clap::ArgGroup::new("source").required(true).args(["pr", "since"])))]
     Diff {
         /// Root directory of the project
         #[arg(default_value = ".")]
@@ -190,7 +191,7 @@ pub enum Command {
         pr: Option<u64>,
 
         /// Git ref to diff against (branch, tag, or commit)
-        #[arg(long, value_name = "REF", conflicts_with = "pr")]
+        #[arg(long, value_name = "REF")]
         since: Option<String>,
 
         /// Output format: markdown or json

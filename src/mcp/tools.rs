@@ -261,7 +261,7 @@ pub(super) fn tool_definitions() -> Value {
             },
             {
                 "name": "get_diff_summary",
-                "description": "Get structural changes (added/removed/modified declarations) since a git ref or for a GitHub PR. Much cheaper than reading raw diffs.",
+                "description": "Get structural changes (added/removed/modified declarations) since a git ref or for a GitHub PR. Requires either 'since_ref' or 'pr' (not both). Much cheaper than reading raw diffs.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
