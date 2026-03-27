@@ -179,6 +179,25 @@ pub enum Command {
         quiet: bool,
     },
 
+    /// Show structural changes for a GitHub PR or git ref
+    #[command(group(clap::ArgGroup::new("source").required(true).args(["pr", "since"])))]
+    Diff {
+        #[command(flatten)]
+        opts: IndexOpts,
+
+        /// GitHub PR number to diff against its base branch
+        #[arg(long)]
+        pr: Option<u64>,
+
+        /// Git ref to diff against (branch, tag, or commit)
+        #[arg(long, value_name = "REF")]
+        since: Option<String>,
+
+        /// Output format: markdown or json
+        #[arg(short, long, default_value = "markdown")]
+        format: OutputFormat,
+    },
+
     /// Initialize indxr configuration files for AI agent integration
     Init {
         /// Root directory to initialize
@@ -241,4 +260,76 @@ pub enum GraphFormat {
 pub enum GraphLevel {
     File,
     Symbol,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_diff_with_pr() {
+        let cli = Cli::parse_from(["indxr", "diff", "--pr", "42"]);
+        match cli.command {
+            Some(Command::Diff { pr, since, .. }) => {
+                assert_eq!(pr, Some(42));
+                assert!(since.is_none());
+            }
+            other => panic!("Expected Diff command, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_diff_with_since() {
+        let cli = Cli::parse_from(["indxr", "diff", "--since", "main"]);
+        match cli.command {
+            Some(Command::Diff { pr, since, .. }) => {
+                assert!(pr.is_none());
+                assert_eq!(since.as_deref(), Some("main"));
+            }
+            other => panic!("Expected Diff command, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_diff_requires_pr_or_since() {
+        let result = Cli::try_parse_from(["indxr", "diff"]);
+        assert!(
+            result.is_err(),
+            "Expected error when neither --pr nor --since is given"
+        );
+    }
+
+    #[test]
+    fn test_diff_rejects_both_pr_and_since() {
+        let result = Cli::try_parse_from(["indxr", "diff", "--pr", "42", "--since", "main"]);
+        assert!(
+            result.is_err(),
+            "Expected error when both --pr and --since are given"
+        );
+    }
+
+    #[test]
+    fn test_diff_with_format_json() {
+        let cli = Cli::parse_from(["indxr", "diff", "--pr", "10", "-f", "json"]);
+        match cli.command {
+            Some(Command::Diff { format, pr, .. }) => {
+                assert_eq!(pr, Some(10));
+                assert!(matches!(format, OutputFormat::Json));
+            }
+            other => panic!("Expected Diff command, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_diff_with_custom_path() {
+        let cli = Cli::parse_from(["indxr", "diff", "/tmp/project", "--since", "v1.0"]);
+        match cli.command {
+            Some(Command::Diff { opts, since, .. }) => {
+                assert_eq!(opts.path, PathBuf::from("/tmp/project"));
+                assert_eq!(since.as_deref(), Some("v1.0"));
+            }
+            other => panic!("Expected Diff command, got: {other:?}"),
+        }
+    }
 }
