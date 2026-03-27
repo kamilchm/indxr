@@ -1711,10 +1711,7 @@ fn test_extract_types_kotlin() {
     let sig = "fun parseFile(path: Path): FileIndex";
     let info = extract_types_from_signature(sig, &Language::Kotlin);
     assert!(info.param_types.contains(&"Path".to_string()));
-    // Kotlin `: ReturnType` after params isn't extracted by the Java-like
-    // extractor, which only looks for return types before the function name.
-    // Known limitation for Kotlin's post-params return type syntax.
-    assert!(info.return_types.is_empty());
+    assert!(info.return_types.contains(&"FileIndex".to_string()));
 }
 
 #[test]

@@ -132,7 +132,8 @@ pub(super) fn extract_types_from_signature(signature: &str, language: &Language)
         Language::Go => extract_types_go(signature),
         Language::TypeScript | Language::JavaScript => extract_types_ts(signature),
         Language::Python => extract_types_python(signature),
-        Language::Java | Language::Kotlin | Language::CSharp => extract_types_java_like(signature),
+        Language::Kotlin => extract_types_kotlin(signature),
+        Language::Java | Language::CSharp => extract_types_java_like(signature),
         Language::Swift => extract_types_swift(signature),
         Language::Ruby => extract_types_ruby(signature),
         _ => TypeInfo {
@@ -460,6 +461,46 @@ fn extract_types_java_like(sig: &str) -> TypeInfo {
                     .collect::<Vec<_>>()
                     .join(" ");
                 return_types.extend(normalize_type_names(&type_str));
+            }
+        }
+    }
+
+    TypeInfo {
+        param_types,
+        return_types,
+    }
+}
+
+/// Kotlin: `fun name(name: Type, name: Type): ReturnType`
+fn extract_types_kotlin(sig: &str) -> TypeInfo {
+    let mut param_types = Vec::new();
+    let mut return_types = Vec::new();
+
+    if let Some(paren_start) = sig.find('(') {
+        let rest = &sig[paren_start..];
+        if let Some(paren_end) = find_matching_close(rest, '(', ')') {
+            let params_str = &rest[1..paren_end];
+            for param in split_respecting_nesting(params_str, ',') {
+                let param = param.trim();
+                if param.is_empty() {
+                    continue;
+                }
+                if let Some(colon_pos) = param.find(':') {
+                    let type_part = param[colon_pos + 1..].trim();
+                    // Strip default value: `param: Type = default`
+                    let type_part = type_part.split('=').next().unwrap_or(type_part).trim();
+                    param_types.extend(normalize_type_names(type_part));
+                }
+            }
+
+            // Return type: `: Type` after the closing paren
+            let after_params = &rest[paren_end + 1..];
+            let after_params = after_params.trim();
+            if let Some(stripped) = after_params.strip_prefix(':') {
+                let ret = stripped.trim();
+                let ret = ret.split('{').next().unwrap_or(ret).trim();
+                let ret = ret.split(" where ").next().unwrap_or(ret).trim();
+                return_types.extend(normalize_type_names(ret));
             }
         }
     }
