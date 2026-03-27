@@ -181,8 +181,10 @@ fn test_tool_definitions_include_new_tools() {
     assert!(names.contains(&"explain_symbol"));
     assert!(names.contains(&"get_related_tests"));
     assert!(names.contains(&"get_dependency_graph"));
-    // Total: 12 original + 7 new = 19
-    assert_eq!(names.len(), 19);
+    assert!(names.contains(&"get_hotspots"));
+    assert!(names.contains(&"get_health"));
+    // Total: 12 original + 9 new = 21
+    assert_eq!(names.len(), 21);
 }
 
 // -----------------------------------------------------------------------

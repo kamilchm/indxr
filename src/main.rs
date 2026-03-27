@@ -235,6 +235,11 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Handle --hotspots mode
+    if cli.hotspots {
+        return handle_hotspots(&index, cli.filter_path.as_deref());
+    }
+
     // Apply filters
     let filter_opts = FilterOptions {
         filter_path: cli.filter_path.clone(),
@@ -360,5 +365,84 @@ fn handle_git_diff(
         }
     }
 
+    Ok(())
+}
+
+fn handle_hotspots(index: &CodebaseIndex, path_filter: Option<&str>) -> Result<()> {
+    struct Entry {
+        file: String,
+        name: String,
+        line: usize,
+        cc: u16,
+        nesting: u16,
+        params: u16,
+        body_lines: usize,
+        score: f64,
+    }
+
+    fn collect(
+        file: &str,
+        decls: &[crate::model::declarations::Declaration],
+        out: &mut Vec<Entry>,
+    ) {
+        for d in decls {
+            if let Some(ref cm) = d.complexity {
+                let bl = d.body_lines.unwrap_or(0);
+                let score = cm.cyclomatic as f64
+                    + cm.max_nesting as f64 * 2.0
+                    + cm.param_count as f64 * 0.5
+                    + bl as f64 / 20.0;
+                out.push(Entry {
+                    file: file.to_string(),
+                    name: d.name.clone(),
+                    line: d.line,
+                    cc: cm.cyclomatic,
+                    nesting: cm.max_nesting,
+                    params: cm.param_count,
+                    body_lines: bl,
+                    score,
+                });
+            }
+            collect(file, &d.children, out);
+        }
+    }
+
+    let mut entries = Vec::new();
+    for file in &index.files {
+        let fp = file.path.to_string_lossy();
+        if let Some(filter) = path_filter {
+            if !fp.contains(filter) && !fp.ends_with(filter) {
+                continue;
+            }
+        }
+        collect(&fp, &file.declarations, &mut entries);
+    }
+
+    entries.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    entries.truncate(30);
+
+    if entries.is_empty() {
+        println!("No complexity data found (only tree-sitter languages are analyzed).");
+        return Ok(());
+    }
+
+    println!(
+        "\n{:>7} {:>4} {:>5} {:>6} {:>6}  Function",
+        "Score", "CC", "Nest", "Params", "Lines"
+    );
+    println!("{}", "-".repeat(78));
+
+    for e in &entries {
+        println!(
+            "{:>7.1} {:>4} {:>5} {:>6} {:>6}  {}:{}  {}",
+            e.score, e.cc, e.nesting, e.params, e.body_lines, e.file, e.line, e.name
+        );
+    }
+
+    println!();
     Ok(())
 }

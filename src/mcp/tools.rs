@@ -384,6 +384,49 @@ pub(super) fn tool_definitions() -> Value {
                         }
                     }
                 }
+            },
+            {
+                "name": "get_hotspots",
+                "description": "Get the most complex functions/methods in the codebase, ranked by a composite complexity score. Useful for identifying refactoring targets and understanding where technical debt concentrates. Only includes tree-sitter parsed languages (Rust, Python, TS, JS, Go, Java, C, C++).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "type": "number",
+                            "description": "Maximum number of results (default 20, max 100)"
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Optional file or directory path filter"
+                        },
+                        "min_complexity": {
+                            "type": "number",
+                            "description": "Minimum cyclomatic complexity to include (default 1)"
+                        },
+                        "sort_by": {
+                            "type": "string",
+                            "enum": ["score", "complexity", "nesting", "params", "body_lines"],
+                            "description": "Sort criterion (default: score — a composite of all metrics)"
+                        },
+                        "compact": {
+                            "type": "boolean",
+                            "description": "If true, return columnar format (saves ~30% tokens)"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "get_health",
+                "description": "Get a codebase health summary with aggregate complexity metrics, documentation coverage, test ratio, and quality indicators. Only complexity data from tree-sitter parsed languages is included.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Optional path filter to scope to a directory or file"
+                        }
+                    }
+                }
             }
         ]
     })
@@ -412,6 +455,8 @@ pub(super) fn handle_tool_call(index: &CodebaseIndex, name: &str, args: &Value) 
         "explain_symbol" => tool_explain_symbol(index, args),
         "get_related_tests" => tool_get_related_tests(index, args),
         "get_dependency_graph" => tool_get_dependency_graph(index, args),
+        "get_hotspots" => tool_get_hotspots(index, args),
+        "get_health" => tool_get_health(index, args),
         _ => tool_error(&format!("Unknown tool: {}", name)),
     }
 }
@@ -1526,4 +1571,297 @@ pub(super) fn tool_get_dependency_graph(index: &CodebaseIndex, args: &Value) -> 
             "graph": dep_graph::format_mermaid(&graph)
         })),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Complexity hotspots & health
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct HotspotEntry {
+    file: String,
+    name: String,
+    kind: String,
+    line: usize,
+    cyclomatic: u16,
+    max_nesting: u16,
+    param_count: u16,
+    body_lines: usize,
+    score: f64,
+}
+
+fn hotspot_score(cyclomatic: u16, max_nesting: u16, param_count: u16, body_lines: usize) -> f64 {
+    cyclomatic as f64
+        + max_nesting as f64 * 2.0
+        + param_count as f64 * 0.5
+        + body_lines as f64 / 20.0
+}
+
+fn collect_hotspots(
+    index: &CodebaseIndex,
+    path_filter: Option<&str>,
+    min_complexity: u16,
+) -> Vec<HotspotEntry> {
+    let mut entries = Vec::new();
+
+    for file in &index.files {
+        let file_path = file.path.to_string_lossy();
+        if let Some(filter) = path_filter {
+            if !file_path.contains(filter) && !file_path.ends_with(filter) {
+                continue;
+            }
+        }
+        collect_hotspots_from_decls(&file_path, &file.declarations, min_complexity, &mut entries);
+    }
+
+    entries
+}
+
+fn collect_hotspots_from_decls(
+    file_path: &str,
+    decls: &[Declaration],
+    min_complexity: u16,
+    entries: &mut Vec<HotspotEntry>,
+) {
+    for decl in decls {
+        if let Some(ref cm) = decl.complexity {
+            if cm.cyclomatic >= min_complexity {
+                let body_lines = decl.body_lines.unwrap_or(0);
+                entries.push(HotspotEntry {
+                    file: file_path.to_string(),
+                    name: decl.name.clone(),
+                    kind: decl.kind.to_string(),
+                    line: decl.line,
+                    cyclomatic: cm.cyclomatic,
+                    max_nesting: cm.max_nesting,
+                    param_count: cm.param_count,
+                    body_lines,
+                    score: hotspot_score(cm.cyclomatic, cm.max_nesting, cm.param_count, body_lines),
+                });
+            }
+        }
+        collect_hotspots_from_decls(file_path, &decl.children, min_complexity, entries);
+    }
+}
+
+pub(super) fn tool_get_hotspots(index: &CodebaseIndex, args: &Value) -> Value {
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(20)
+        .min(100) as usize;
+    let path_filter = args.get("path").and_then(|v| v.as_str());
+    let min_complexity = args
+        .get("min_complexity")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(1) as u16;
+    let sort_by = args
+        .get("sort_by")
+        .and_then(|v| v.as_str())
+        .unwrap_or("score");
+
+    let mut entries = collect_hotspots(index, path_filter, min_complexity);
+
+    match sort_by {
+        "complexity" => entries.sort_by(|a, b| b.cyclomatic.cmp(&a.cyclomatic)),
+        "nesting" => entries.sort_by(|a, b| b.max_nesting.cmp(&a.max_nesting)),
+        "params" => entries.sort_by(|a, b| b.param_count.cmp(&a.param_count)),
+        "body_lines" => entries.sort_by(|a, b| b.body_lines.cmp(&a.body_lines)),
+        _ => entries.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }),
+    }
+
+    entries.truncate(limit);
+    let total = entries.len();
+
+    if is_compact(args) {
+        let compact = serialize_compact(
+            &entries,
+            &[
+                "file",
+                "name",
+                "kind",
+                "line",
+                "cyclomatic",
+                "max_nesting",
+                "param_count",
+                "body_lines",
+                "score",
+            ],
+        );
+        return tool_result(json!({ "total": total, "hotspots": compact }));
+    }
+
+    tool_result(json!({ "total": total, "hotspots": entries }))
+}
+
+struct HealthAccumulator {
+    total_functions: usize,
+    analyzed: usize,
+    cc_values: Vec<u16>,
+    nesting_sum: f64,
+    params_sum: f64,
+    body_lines_sum: f64,
+    high_complexity: usize,
+    documented: usize,
+    test_count: usize,
+    deprecated_count: usize,
+    public_api_count: usize,
+    file_stats: HashMap<String, (Vec<u16>, u16)>,
+}
+
+impl HealthAccumulator {
+    fn new() -> Self {
+        Self {
+            total_functions: 0,
+            analyzed: 0,
+            cc_values: Vec::new(),
+            nesting_sum: 0.0,
+            params_sum: 0.0,
+            body_lines_sum: 0.0,
+            high_complexity: 0,
+            documented: 0,
+            test_count: 0,
+            deprecated_count: 0,
+            public_api_count: 0,
+            file_stats: HashMap::new(),
+        }
+    }
+
+    fn collect(&mut self, file_path: &str, decls: &[Declaration]) {
+        use crate::model::declarations::Visibility;
+
+        for decl in decls {
+            let is_func = matches!(
+                decl.kind,
+                DeclKind::Function | DeclKind::Method | DeclKind::ShellFunction
+            );
+
+            if is_func {
+                self.total_functions += 1;
+
+                if decl.is_test {
+                    self.test_count += 1;
+                }
+                if decl.is_deprecated {
+                    self.deprecated_count += 1;
+                }
+                if matches!(decl.visibility, Visibility::Public) {
+                    self.public_api_count += 1;
+                }
+                if decl.doc_comment.is_some() {
+                    self.documented += 1;
+                }
+
+                if let Some(ref cm) = decl.complexity {
+                    self.analyzed += 1;
+                    self.cc_values.push(cm.cyclomatic);
+                    self.nesting_sum += cm.max_nesting as f64;
+                    self.params_sum += cm.param_count as f64;
+                    self.body_lines_sum += decl.body_lines.unwrap_or(0) as f64;
+
+                    if cm.cyclomatic >= 10 {
+                        self.high_complexity += 1;
+                    }
+
+                    let entry = self
+                        .file_stats
+                        .entry(file_path.to_string())
+                        .or_insert_with(|| (Vec::new(), 0));
+                    entry.0.push(cm.cyclomatic);
+                    entry.1 = entry.1.max(cm.cyclomatic);
+                }
+            }
+
+            self.collect(file_path, &decl.children);
+        }
+    }
+}
+
+pub(super) fn tool_get_health(index: &CodebaseIndex, args: &Value) -> Value {
+    let path_filter = args.get("path").and_then(|v| v.as_str());
+
+    let mut acc = HealthAccumulator::new();
+
+    for file in &index.files {
+        let file_path = file.path.to_string_lossy();
+        if let Some(filter) = path_filter {
+            if !file_path.contains(filter) && !file_path.ends_with(filter) {
+                continue;
+            }
+        }
+        acc.collect(&file_path, &file.declarations);
+    }
+
+    let n = acc.analyzed.max(1) as f64;
+    acc.cc_values.sort_unstable();
+
+    let median_cc = if acc.cc_values.is_empty() {
+        0
+    } else {
+        acc.cc_values[acc.cc_values.len() / 2]
+    };
+    let p90_cc = if acc.cc_values.is_empty() {
+        0
+    } else {
+        acc.cc_values[(acc.cc_values.len() as f64 * 0.9) as usize]
+    };
+    let max_cc = acc.cc_values.last().copied().unwrap_or(0);
+    let avg_cc = if acc.cc_values.is_empty() {
+        0.0
+    } else {
+        acc.cc_values.iter().map(|&v| v as f64).sum::<f64>() / n
+    };
+
+    // Hottest files: top 5 by average complexity (min 2 functions)
+    let mut hottest: Vec<Value> = acc
+        .file_stats
+        .iter()
+        .filter(|(_, (ccs, _))| ccs.len() >= 2)
+        .map(|(path, (ccs, max_cc))| {
+            let avg = ccs.iter().map(|&v| v as f64).sum::<f64>() / ccs.len() as f64;
+            json!({
+                "file": path,
+                "functions": ccs.len(),
+                "avg_complexity": (avg * 10.0).round() / 10.0,
+                "max_complexity": max_cc
+            })
+        })
+        .collect();
+    hottest.sort_by(|a, b| {
+        b["avg_complexity"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .partial_cmp(&a["avg_complexity"].as_f64().unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    hottest.truncate(5);
+
+    tool_result(json!({
+        "total_functions": acc.total_functions,
+        "analyzed": acc.analyzed,
+        "complexity": {
+            "avg": (avg_cc * 10.0).round() / 10.0,
+            "median": median_cc,
+            "max": max_cc,
+            "p90": p90_cc
+        },
+        "nesting": { "avg": (acc.nesting_sum / n * 10.0).round() / 10.0 },
+        "params": { "avg": (acc.params_sum / n * 10.0).round() / 10.0 },
+        "body_lines": { "avg": (acc.body_lines_sum / n * 10.0).round() / 10.0 },
+        "high_complexity_count": acc.high_complexity,
+        "high_complexity_pct": if acc.total_functions > 0 {
+            (acc.high_complexity as f64 / acc.total_functions as f64 * 1000.0).round() / 10.0
+        } else { 0.0 },
+        "documented_pct": if acc.total_functions > 0 {
+            (acc.documented as f64 / acc.total_functions as f64 * 1000.0).round() / 10.0
+        } else { 0.0 },
+        "test_count": acc.test_count,
+        "deprecated_count": acc.deprecated_count,
+        "public_api_count": acc.public_api_count,
+        "hottest_files": hottest
+    }))
 }
