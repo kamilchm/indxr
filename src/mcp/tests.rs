@@ -1937,3 +1937,74 @@ fn test_extract_types_cpp_method() {
         info.param_types
     );
 }
+
+#[test]
+fn test_extract_types_go_no_receiver_multi_return() {
+    let sig = "func ParseFiles(paths []string) ([]FileIndex, error)";
+    let info = extract_types_from_signature(sig, &Language::Go);
+    assert!(
+        info.return_types.contains(&"FileIndex".to_string()),
+        "Expected FileIndex in return types, got: {:?}",
+        info.return_types
+    );
+    // error is primitive, should be filtered
+    assert!(
+        !info
+            .return_types
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case("error"))
+    );
+}
+
+#[test]
+fn test_extract_types_go_receiver_with_multi_return() {
+    let sig = "func (s *Server) Handle(req Request) (Response, error)";
+    let info = extract_types_from_signature(sig, &Language::Go);
+    assert!(
+        info.param_types.contains(&"Request".to_string()),
+        "Expected Request in param types, got: {:?}",
+        info.param_types
+    );
+    assert!(
+        info.return_types.contains(&"Response".to_string()),
+        "Expected Response in return types, got: {:?}",
+        info.return_types
+    );
+}
+
+#[test]
+fn test_extract_types_rust_nested_generics() {
+    let sig = "pub fn parse(data: &str) -> Result<Vec<FileIndex>, Error>";
+    let info = extract_types_from_signature(sig, &Language::Rust);
+    assert!(
+        info.return_types.contains(&"Result".to_string()),
+        "Expected Result in return types, got: {:?}",
+        info.return_types
+    );
+    assert!(
+        info.return_types.contains(&"Vec".to_string()),
+        "Expected Vec in return types, got: {:?}",
+        info.return_types
+    );
+    assert!(
+        info.return_types.contains(&"FileIndex".to_string()),
+        "Expected FileIndex in return types, got: {:?}",
+        info.return_types
+    );
+}
+
+#[test]
+fn test_tool_get_type_flow_producer_and_consumer() {
+    // Path is both a param type (consumer) and could be a return type (producer)
+    // in the test index: parse_file(path: &Path) → consumes Path
+    let index = make_test_index();
+    let result = tool_get_type_flow(&index, &json!({ "type_name": "Value" }));
+    let text = result["content"][0]["text"].as_str().unwrap();
+    let content: Value = serde_json::from_str(text).unwrap();
+
+    // Cache.get returns Option<&Value> → producer
+    assert!(
+        content["producers_count"].as_u64().unwrap() >= 1,
+        "Expected at least 1 producer of Value"
+    );
+}

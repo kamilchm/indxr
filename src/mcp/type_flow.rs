@@ -240,12 +240,11 @@ fn extract_types_go(sig: &str) -> TypeInfo {
 
     let sig_trimmed = sig.trim();
 
-    // Find all parenthesized groups
+    // Find all parenthesized groups (using byte indices for correct slicing)
     let mut paren_groups: Vec<(usize, usize)> = Vec::new();
     let mut i = 0;
-    let chars: Vec<char> = sig_trimmed.chars().collect();
-    while i < chars.len() {
-        if chars[i] == '(' {
+    while i < sig_trimmed.len() {
+        if sig_trimmed.as_bytes()[i] == b'(' {
             if let Some(end) = find_matching_close(&sig_trimmed[i..], '(', ')') {
                 paren_groups.push((i, i + end));
                 i = i + end + 1;
@@ -262,7 +261,7 @@ fn extract_types_go(sig: &str) -> TypeInfo {
         0 => (None, None),
         1 => (Some(0), None),
         2 => {
-            // Could be (receiver) Name(params) or (params)(returns)
+            // Distinguish `func Name(params) (returns)` from `func (recv) Name(params)`
             // If the text between groups contains a name, first is receiver
             let between = &sig_trimmed[paren_groups[0].1 + 1..paren_groups[1].0];
             if between.trim().chars().any(|c| c.is_alphabetic()) {
