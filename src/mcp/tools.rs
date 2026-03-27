@@ -1669,7 +1669,7 @@ impl HealthAccumulator {
         for decl in decls {
             let is_func = matches!(
                 decl.kind,
-                DeclKind::Function | DeclKind::Method | DeclKind::ShellFunction
+                DeclKind::Function | DeclKind::Method
             );
 
             if is_func {
@@ -1753,13 +1753,13 @@ pub(super) fn tool_get_health(index: &CodebaseIndex, args: &Value) -> Value {
         .file_stats
         .iter()
         .filter(|(_, (ccs, _))| ccs.len() >= 2)
-        .map(|(path, (ccs, max_cc))| {
+        .map(|(path, (ccs, file_max_cc))| {
             let avg = ccs.iter().map(|&v| v as f64).sum::<f64>() / ccs.len() as f64;
             json!({
                 "file": path,
                 "functions": ccs.len(),
                 "avg_complexity": (avg * 10.0).round() / 10.0,
-                "max_complexity": max_cc
+                "max_complexity": file_max_cc
             })
         })
         .collect();

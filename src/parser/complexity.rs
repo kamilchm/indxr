@@ -211,14 +211,24 @@ fn compute_max_nesting(
 
 fn function_node_kinds(language: &Language) -> &'static [&'static str] {
     match language {
-        Language::Rust => &["function_item"],
-        Language::Python => &["function_definition"],
-        Language::TypeScript => &["function_declaration", "method_definition"],
-        Language::JavaScript => &["function_declaration", "method_definition"],
-        Language::Go => &["function_declaration", "method_declaration"],
-        Language::Java => &["method_declaration", "constructor_declaration"],
+        Language::Rust => &["function_item", "closure_expression"],
+        Language::Python => &["function_definition", "lambda"],
+        Language::TypeScript => &[
+            "function_declaration",
+            "method_definition",
+            "arrow_function",
+            "function_expression",
+        ],
+        Language::JavaScript => &[
+            "function_declaration",
+            "method_definition",
+            "arrow_function",
+            "function_expression",
+        ],
+        Language::Go => &["function_declaration", "method_declaration", "func_literal"],
+        Language::Java => &["method_declaration", "constructor_declaration", "lambda_expression"],
         Language::C => &["function_definition"],
-        Language::Cpp => &["function_definition"],
+        Language::Cpp => &["function_definition", "lambda_expression"],
         _ => &[],
     }
 }
@@ -677,5 +687,31 @@ trait Foo {
             bar.is_none(),
             "bodyless declarations should not have complexity"
         );
+    }
+
+    #[test]
+    fn rust_nested_closure_isolation() {
+        let src = r#"
+fn outer(x: i32) -> i32 {
+    let add = |a: i32, b: i32| -> i32 {
+        if a > 0 {
+            a + b
+        } else {
+            b
+        }
+    };
+    if x > 0 {
+        add(x, 1)
+    } else {
+        0
+    }
+}
+"#;
+        let decls = parse_and_annotate(src, Language::Rust);
+        let c = get_complexity(&decls, "outer").expect("should have complexity");
+        // Closure branches should NOT leak into outer function.
+        // outer has: 1 base + 1 if = 2
+        assert_eq!(c.cyclomatic, 2, "cyclomatic={}", c.cyclomatic);
+        assert_eq!(c.max_nesting, 1, "nesting={}", c.max_nesting);
     }
 }
