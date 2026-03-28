@@ -22,7 +22,7 @@ AI coding agents waste thousands of tokens reading entire source files just to u
 - **Git structural diffing** — declaration-level diffs (`+` added, `-` removed, `~` changed) against any git ref or GitHub PR
 - **Dependency graphs** — file and symbol dependency visualization as DOT, Mermaid, or JSON
 - **File watching** — continuous re-indexing as you edit, via `indxr watch` or `indxr serve --watch`
-- **One-command agent setup** — `indxr init` configures Claude Code, Cursor, and Windsurf with MCP, instruction files, and hooks
+- **One-command agent setup** — `indxr init` configures Claude Code, Cursor, Windsurf, and Codex CLI with MCP, instruction files, and hooks
 - **Incremental caching** — mtime + xxh3 content hashing, sub-20ms indexing for most projects
 - **Complexity hotspots** — per-function cyclomatic complexity, nesting depth, and parameter count via tree-sitter AST analysis; codebase health reports
 - **Type flow tracking** — cross-file analysis showing which functions produce (return) and consume (accept) a given type
@@ -61,14 +61,18 @@ indxr init                    # set up for all agents
 indxr init --claude           # Claude Code only
 indxr init --cursor           # Cursor only
 indxr init --windsurf         # Windsurf only
+indxr init --codex            # OpenAI Codex CLI only
+indxr init --global           # install globally for all projects
+indxr init --global --cursor  # global Cursor only
 ```
 
-| Agent | Files Created |
-|---|---|
-| Claude Code | `.mcp.json`, `CLAUDE.md`, `.claude/settings.json` (PreToolUse hooks) |
-| Cursor | `.cursor/mcp.json`, `.cursorrules` |
-| Windsurf | `.windsurf/mcp.json`, `.windsurfrules` |
-| All | `.gitignore` entry, `INDEX.md` (static index) |
+| Agent | Project Files | Global Files (`--global`) |
+|---|---|---|
+| Claude Code | `.mcp.json`, `CLAUDE.md`, `.claude/settings.json` | `~/.claude.json`, `~/.claude/CLAUDE.md` |
+| Cursor | `.cursor/mcp.json`, `.cursor/rules/indxr.mdc` | `~/.cursor/mcp.json` |
+| Windsurf | `.windsurf/mcp.json`, `.windsurf/rules/indxr.md` | `~/.codeium/windsurf/mcp_config.json`, `~/.codeium/windsurf/memories/global_rules.md` |
+| Codex CLI | `.codex/config.toml`, `AGENTS.md` | `~/.codex/config.toml`, `~/.codex/AGENTS.md` |
+| All | `.gitignore` entry, `INDEX.md` | — |
 
 Agents don't always pick MCP tools over file reads on their own. `indxr init` sets up reinforcement — PreToolUse hooks intercept `Read`/`Bash` calls and instruction files teach the exploration workflow.
 

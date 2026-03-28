@@ -1,6 +1,6 @@
 # Codebase Index: indxr
 
-> Generated: 2026-03-27 20:39:35 UTC | Files: 58 | Lines: 30650
+> Generated: 2026-03-28 04:32:26 UTC | Files: 58 | Lines: 31661
 > Languages: Markdown (14), Python (1), Rust (41), Shell (1), TOML (1)
 
 ## Directory Structure
@@ -130,8 +130,6 @@ indxr/
 
 **docs/agent-integration.md**
 - `# Agent Integration Guide`
-- `# Generate a compact index`
-- `# Include in Codex instructions`
 - `# Full structured index`
 - `# Pipe to your agent`
 - `# Generate a scoped index for the area you're working in`
@@ -185,9 +183,12 @@ indxr/
 - `# Slower debounce for high-frequency saves`
 - `# Quiet mode (no progress output)`
 - `# MCP server with auto-reindex`
-- `# Set up for all agents (Claude Code, Cursor, Windsurf)`
+- `# Set up for all agents (Claude Code, Cursor, Windsurf, Codex CLI)`
 - `# Claude Code only`
 - `# Cursor and Windsurf only`
+- `# OpenAI Codex CLI only`
+- `# Install globally for all projects`
+- `# Global Cursor only`
 - `# Config files only, skip INDEX.md generation`
 - `# Skip PreToolUse hooks`
 - `# Overwrite existing files`
@@ -556,7 +557,7 @@ indxr/
 
 ## CLAUDE.md
 
-**Language:** Markdown | **Size:** 11.9 KB | **Lines:** 194
+**Language:** Markdown | **Size:** 12.2 KB | **Lines:** 197
 
 **Declarations:**
 
@@ -585,7 +586,7 @@ indxr/
 
 ## INDEX.md
 
-**Language:** Markdown | **Size:** 64.4 KB | **Lines:** 2379
+**Language:** Markdown | **Size:** 70.6 KB | **Lines:** 2552
 
 **Declarations:**
 
@@ -593,7 +594,7 @@ indxr/
 
 ## README.md
 
-**Language:** Markdown | **Size:** 9.7 KB | **Lines:** 247
+**Language:** Markdown | **Size:** 10.1 KB | **Lines:** 251
 
 **Declarations:**
 
@@ -609,7 +610,7 @@ indxr/
 
 ## docs/agent-integration.md
 
-**Language:** Markdown | **Size:** 15.9 KB | **Lines:** 468
+**Language:** Markdown | **Size:** 17.2 KB | **Lines:** 474
 
 **Declarations:**
 
@@ -625,7 +626,7 @@ indxr/
 
 ## docs/cli-reference.md
 
-**Language:** Markdown | **Size:** 10.1 KB | **Lines:** 391
+**Language:** Markdown | **Size:** 11.1 KB | **Lines:** 409
 
 **Declarations:**
 
@@ -665,7 +666,7 @@ indxr/
 
 ## docs/mcp-server.md
 
-**Language:** Markdown | **Size:** 23.0 KB | **Lines:** 756
+**Language:** Markdown | **Size:** 23.4 KB | **Lines:** 766
 
 **Declarations:**
 
@@ -783,7 +784,7 @@ indxr/
 
 ## src/cli.rs
 
-**Language:** Rust | **Size:** 9.6 KB | **Lines:** 355
+**Language:** Rust | **Size:** 10.0 KB | **Lines:** 364
 
 **Imports:**
 - `std::path::PathBuf`
@@ -805,8 +806,8 @@ indxr/
 - `std::path::Path`
 - `serde::Serialize`
 - `serde_json::{Value, json}`
-- `crate::model::{CodebaseIndex, FileIndex}`
 - `crate::model::declarations::{Declaration, RelKind}`
+- `crate::model::{CodebaseIndex, FileIndex}`
 - `crate::utils::contains_word_boundary`
 
 **Declarations:**
@@ -969,7 +970,7 @@ indxr/
 
 ## src/init.rs
 
-**Language:** Rust | **Size:** 25.4 KB | **Lines:** 711
+**Language:** Rust | **Size:** 49.2 KB | **Lines:** 1365
 
 **Imports:**
 - `std::fs`
@@ -984,11 +985,25 @@ indxr/
 **Declarations:**
 
 `enum WriteResult`
-> Variants: `Created`, `Skipped`, `Appended`
+> Variants: `Created`, `Updated`, `Skipped`, `Appended`
 
 `fn display_relative(path: &Path, root: &Path) -> String`
 
+`fn display_home(path: &Path, home: &Path) -> String`
+
+`fn home_dir() -> Result<PathBuf>`
+
+`fn print_summary(results: &[WriteResult], display: impl Fn(&Path) -> String)`
+
+`fn warn_deprecated(root: &Path, old_file: &str, new_file: &str)`
+
 `fn write_file_safe(path: &Path, content: &str, force: bool) -> Result<WriteResult>`
+
+`fn merge_mcp_server(path: &Path, force: bool) -> Result<WriteResult>`
+
+`fn append_or_create_instructions(path: &Path, content: &str, marker: &str) -> Result<WriteResult>`
+
+`fn merge_mcp_server_toml(path: &Path, force: bool) -> Result<WriteResult>`
 
 `fn setup_claude( root: &Path, force: bool, include_hooks: bool, include_rtk: bool, ) -> Result<Vec<WriteResult>>`
 
@@ -996,9 +1011,19 @@ indxr/
 
 `fn setup_windsurf(root: &Path, force: bool, include_rtk: bool) -> Result<Vec<WriteResult>>`
 
+`fn setup_codex(root: &Path, force: bool, include_rtk: bool) -> Result<Vec<WriteResult>>`
+
 `fn detect_rtk() -> bool`
 
 `fn setup_rtk_claude(root: &Path, force: bool) -> Result<Vec<WriteResult>>`
+
+`fn setup_claude_global(home: &Path, force: bool, include_rtk: bool) -> Result<Vec<WriteResult>>`
+
+`fn setup_cursor_global(home: &Path, force: bool, _include_rtk: bool) -> Result<Vec<WriteResult>>`
+
+`fn setup_windsurf_global(home: &Path, force: bool, include_rtk: bool) -> Result<Vec<WriteResult>>`
+
+`fn setup_codex_global(home: &Path, force: bool, include_rtk: bool) -> Result<Vec<WriteResult>>`
 
 `const RTK_HOOK_SCRIPT: &str = r#"#!/bin/bash # RTK rewrite hook for Claude Code — installed by indxr init # Intercepts Bash commands and rewrites them through rtk for token compression # Skip silently if rtk or jq is not installed command -v rtk >/dev/null 2>&1 || exit 0 command -v jq >/dev/null 2>&1 || exit 0 # Extract the command from tool input COMMAND=$(printf '%s' "$TOOL_INPUT" | jq -r '.command // empty') [ -z "$COMMAND" ] && exit 0 # Ask rtk to rewrite the command REWRITTEN=$(rtk rewrite "$COMMAND" 2>/dev/null) EXIT_CODE=$? case $EXIT_CODE in 0) # Rewrite successful — auto-allow with rewritten command ESCAPED=$(printf '%s' "$REWRITTEN" | jq -Rs .) echo "`
 
@@ -1012,9 +1037,19 @@ indxr/
 
 `fn claude_settings_content(include_rtk: bool) -> String`
 
-`fn cursorrules_content(include_rtk: bool) -> String`
+`fn rules_body(include_rtk: bool) -> String`
 
-`fn windsurfrules_content(include_rtk: bool) -> String`
+`fn cursor_mdc_content(include_rtk: bool) -> String`
+
+`fn windsurf_rule_content(include_rtk: bool) -> String`
+
+`fn global_claude_md_content(include_rtk: bool) -> String`
+
+`fn global_windsurf_rules_content(include_rtk: bool) -> String`
+
+`fn codex_config_toml_content() -> String`
+
+`fn agents_md_content(include_rtk: bool) -> String`
 
 `mod tests`
 
@@ -1049,7 +1084,7 @@ indxr/
 
 ## src/main.rs
 
-**Language:** Rust | **Size:** 14.0 KB | **Lines:** 490
+**Language:** Rust | **Size:** 14.1 KB | **Lines:** 495
 
 **Imports:**
 - `std::collections::HashMap`
@@ -1259,7 +1294,7 @@ indxr/
 
 ## src/mcp/tests.rs
 
-**Language:** Rust | **Size:** 86.9 KB | **Lines:** 2496
+**Language:** Rust | **Size:** 91.3 KB | **Lines:** 2626
 
 **Imports:**
 - `std::collections::HashMap`
@@ -1572,6 +1607,10 @@ indxr/
 
 `fn test_find_member_by_path()`
 
+`fn test_find_member_by_path_ambiguous()`
+
+`fn test_find_member_by_path_same_relative_path()`
+
 `fn test_find_member_by_name()`
 
 `fn test_workspace_is_single()`
@@ -1580,7 +1619,7 @@ indxr/
 
 ## src/mcp/tools.rs
 
-**Language:** Rust | **Size:** 77.8 KB | **Lines:** 2133
+**Language:** Rust | **Size:** 77.9 KB | **Lines:** 2143
 
 **Imports:**
 - `std::collections::HashMap`
@@ -1686,7 +1725,7 @@ indxr/
 
 ## src/model/mod.rs
 
-**Language:** Rust | **Size:** 4.7 KB | **Lines:** 157
+**Language:** Rust | **Size:** 4.1 KB | **Lines:** 145
 
 **Imports:**
 - `std::collections::HashMap`
@@ -1784,8 +1823,8 @@ indxr/
 - `std::collections::HashMap`
 - `serde::Serialize`
 - `crate::languages::Language`
-- `crate::model::{CodebaseIndex, FileIndex}`
 - `crate::model::declarations::{ComplexityMetrics, DeclKind, Declaration, Visibility}`
+- `crate::model::{CodebaseIndex, FileIndex}`
 - `crate::utils::path_matches_filter`
 
 **Declarations:**
@@ -2465,7 +2504,7 @@ indxr/
 
 ## src/workspace.rs
 
-**Language:** Rust | **Size:** 22.9 KB | **Lines:** 772
+**Language:** Rust | **Size:** 22.9 KB | **Lines:** 773
 
 **Imports:**
 - `std::fs`

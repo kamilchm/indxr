@@ -123,7 +123,9 @@ fn main() -> Result<()> {
         claude,
         cursor,
         windsurf,
+        codex,
         all,
+        global,
         no_index,
         no_hooks,
         no_rtk,
@@ -131,17 +133,20 @@ fn main() -> Result<()> {
         max_file_size,
     }) = &cli.command
     {
-        let (claude, cursor, windsurf) = if *all || (!*claude && !*cursor && !*windsurf) {
-            (true, true, true)
-        } else {
-            (*claude, *cursor, *windsurf)
-        };
+        let (claude, cursor, windsurf, codex) =
+            if *all || (!*claude && !*cursor && !*windsurf && !*codex) {
+                (true, true, true, true)
+            } else {
+                (*claude, *cursor, *windsurf, *codex)
+            };
 
         let opts = init::InitOptions {
             path: path.clone(),
             claude,
             cursor,
             windsurf,
+            codex,
+            global: *global,
             generate_index: !no_index,
             force: *force,
             include_hooks: !no_hooks,

@@ -59,13 +59,18 @@ indxr serve ./my-project --watch   # auto-reindex on file changes
 The fastest way to set up indxr for any agent is the `init` command:
 
 ```bash
-indxr init                    # all agents (Claude Code, Cursor, Windsurf)
+indxr init                    # all agents (Claude Code, Cursor, Windsurf, Codex CLI)
 indxr init --claude           # Claude Code only
 indxr init --cursor           # Cursor only
 indxr init --windsurf         # Windsurf only
+indxr init --codex            # OpenAI Codex CLI only
+indxr init --global           # install globally for all projects
+indxr init --global --cursor  # global Cursor only
 ```
 
 This creates all configuration files, agent instruction files, PreToolUse hooks, and an initial INDEX.md in one command. Use `--no-index` to skip INDEX.md generation, `--no-hooks` to skip PreToolUse hooks, `--force` to overwrite existing files.
+
+Use `--global` to install indxr into user-level config directories so it's available for every project without per-project setup. Global mode merges the indxr MCP server entry into existing config files (preserving other servers and settings).
 
 The sections below describe what each file does and how to set things up manually.
 
@@ -73,7 +78,7 @@ The sections below describe what each file does and how to set things up manuall
 
 ### Claude Code
 
-**Automated setup:** `indxr init --claude` creates `.mcp.json`, `CLAUDE.md`, and `.claude/settings.json` automatically.
+**Automated setup:** `indxr init --claude` creates `.mcp.json`, `CLAUDE.md`, and `.claude/settings.json` automatically. Use `indxr init --global --claude` to install globally at `~/.claude.json` (MCP) and `~/.claude/CLAUDE.md` (instructions).
 
 **Manual setup:** Claude Code supports MCP servers natively. Add indxr to your project's `.mcp.json`:
 
@@ -194,11 +199,9 @@ Restart Claude Desktop after updating the config. The indxr tools will appear in
 
 ### Cursor
 
-**Automated setup:** `indxr init --cursor` creates `.cursor/mcp.json` and `.cursorrules` automatically.
+**Automated setup:** `indxr init --cursor` creates `.cursor/mcp.json` and `.cursor/rules/indxr.mdc` automatically. Use `indxr init --global --cursor` to install globally at `~/.cursor/mcp.json`. If upgrading from a previous setup, indxr will warn about the deprecated `.cursorrules` file — you can safely remove it.
 
-**Manual setup:** Cursor supports MCP servers. Add to your Cursor MCP configuration:
-
-**Settings → MCP Servers → Add Server:**
+**Manual setup:** Cursor supports MCP servers. Add to `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global):
 
 ```json
 {
@@ -211,6 +214,8 @@ Restart Claude Desktop after updating the config. The indxr tools will appear in
 }
 ```
 
+**Project rules:** Create `.cursor/rules/indxr.mdc` with instructions to use indxr MCP tools.
+
 **Static index approach for Cursor:**
 
 Generate an index and add it to your project rules:
@@ -219,7 +224,7 @@ Generate an index and add it to your project rules:
 indxr --max-tokens 6000 --public-only -o .cursor/INDEX.md
 ```
 
-Then reference it in `.cursorrules`:
+Then reference it in `.cursor/rules/`:
 
 ```
 When exploring this codebase, refer to .cursor/INDEX.md for a structural overview
@@ -228,16 +233,16 @@ of all files, functions, classes, and imports.
 
 ### Windsurf
 
-**Automated setup:** `indxr init --windsurf` creates `.windsurf/mcp.json` and `.windsurfrules` automatically.
+**Automated setup:** `indxr init --windsurf` creates `.windsurf/mcp.json` and `.windsurf/rules/indxr.md` automatically. Use `indxr init --global --windsurf` to install globally at `~/.codeium/windsurf/mcp_config.json` and `~/.codeium/windsurf/memories/global_rules.md`. If upgrading from a previous setup, indxr will warn about the deprecated `.windsurfrules` file — you can safely remove it.
 
-**Manual setup:** Windsurf supports MCP servers. Add to your MCP configuration:
+**Manual setup:** Windsurf supports MCP servers. Add to `.windsurf/mcp.json` (project) or `~/.codeium/windsurf/mcp_config.json` (global):
 
 ```json
 {
   "mcpServers": {
     "indxr": {
       "command": "indxr",
-      "args": ["serve", "/path/to/project"]
+      "args": ["serve", "."]
     }
   }
 }
@@ -245,22 +250,23 @@ of all files, functions, classes, and imports.
 
 ### OpenAI Codex CLI
 
-Codex CLI doesn't support MCP, so use the static index approach:
+**Automated setup:** `indxr init --codex` creates `.codex/config.toml` and `AGENTS.md` automatically. Use `indxr init --global --codex` to install globally at `~/.codex/config.toml` and `~/.codex/AGENTS.md`.
 
-```bash
-# Generate a compact index
-indxr --max-tokens 8000 -o INDEX.md
+**Manual setup:** Codex CLI uses TOML configuration. Add to `.codex/config.toml` (project) or `~/.codex/config.toml` (global):
 
-# Include in Codex instructions
-codex -p "$(cat INDEX.md)
-
-Given the codebase structure above, implement..."
+```toml
+[mcp_servers.indxr]
+command = "indxr"
+args = ["serve", "."]
 ```
 
-**Tips for Codex:**
-- Use `--max-tokens` to fit within Codex's context window
-- `--public-only` is great for API-focused tasks
-- `--filter-path` to scope to the relevant part of the codebase
+Or use the CLI:
+
+```bash
+codex mcp add indxr -- indxr serve .
+```
+
+**Instructions file:** Create `AGENTS.md` in the project root (or `~/.codex/AGENTS.md` for global) with instructions to use indxr MCP tools for codebase navigation.
 
 ### GitHub Copilot
 
