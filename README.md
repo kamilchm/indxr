@@ -17,11 +17,12 @@ AI coding agents waste thousands of tokens reading entire source files just to u
 ## Features
 
 - **27 languages** — tree-sitter AST parsing for 8 languages, regex extraction for 19 more
-- **22-tool MCP server** — live codebase queries over JSON-RPC: symbol lookup, file summaries, caller tracing, signature search, complexity hotspots, type flow tracking, and more
+- **23-tool MCP server** — live codebase queries over JSON-RPC: symbol lookup, file summaries, caller tracing, signature search, complexity hotspots, type flow tracking, workspace support, and more
 - **Token-aware** — progressive truncation to fit context windows, ~5x reduction vs reading full files
 - **Git structural diffing** — declaration-level diffs (`+` added, `-` removed, `~` changed) against any git ref or GitHub PR
 - **Dependency graphs** — file and symbol dependency visualization as DOT, Mermaid, or JSON
 - **File watching** — continuous re-indexing as you edit, via `indxr watch` or `indxr serve --watch`
+- **Monorepo / workspace support** — auto-detects Cargo, npm, and Go workspaces; scope any tool or command to a specific member via `--member`
 - **One-command agent setup** — `indxr init` configures Claude Code, Cursor, Windsurf, and Codex CLI with MCP, instruction files, and hooks
 - **Incremental caching** — mtime + xxh3 content hashing, sub-20ms indexing for most projects
 - **Complexity hotspots** — per-function cyclomatic complexity, nesting depth, and parameter count via tree-sitter AST analysis; codebase health reports
@@ -51,6 +52,7 @@ indxr -f json -l rust,python -o index.json   # JSON, filter by language
 indxr serve ./my-project                     # start MCP server
 indxr serve ./my-project --watch             # MCP server with auto-reindex
 indxr watch ./my-project                     # watch & keep INDEX.md updated
+indxr members                                # list workspace members (monorepo)
 indxr init                                   # set up all agent configs
 ```
 
@@ -64,6 +66,7 @@ indxr init --windsurf         # Windsurf only
 indxr init --codex            # OpenAI Codex CLI only
 indxr init --global           # install globally for all projects
 indxr init --global --cursor  # global Cursor only
+indxr init --no-rtk           # skip RTK hook setup
 ```
 
 | Agent | Project Files | Global Files (`--global`) |
@@ -78,7 +81,7 @@ Agents don't always pick MCP tools over file reads on their own. `indxr init` se
 
 ## MCP Server
 
-JSON-RPC 2.0 over stdin/stdout, 22 tools:
+JSON-RPC 2.0 over stdin/stdout (or Streamable HTTP with `--features http`), 23 tools:
 
 | Tool | Description |
 |---|---|
@@ -103,9 +106,10 @@ JSON-RPC 2.0 over stdin/stdout, 22 tools:
 | `get_health` | Codebase health summary with aggregate complexity metrics |
 | `get_type_flow` | Track which functions produce/consume a given type across the codebase |
 | `get_dependency_graph` | File and symbol dependency graph (DOT, Mermaid, JSON) |
+| `list_workspace_members` | List monorepo workspace members (Cargo, npm, Go) |
 | `regenerate_index` | Re-index and update INDEX.md |
 
-List tools support `compact` mode for ~30% token savings. See [MCP Server docs](docs/mcp-server.md) for full parameter details.
+Most tools accept an optional `member` param to scope queries to a specific workspace member. List tools support `compact` mode for ~30% token savings. See [MCP Server docs](docs/mcp-server.md) for full parameter details.
 
 ## Output
 

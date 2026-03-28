@@ -27,6 +27,7 @@ indxr init [PATH] [OPTIONS]
 - `--global` — Install to global/user-level config so indxr is available for all projects
 - `--no-index` — Skip generating INDEX.md
 - `--no-hooks` — Skip PreToolUse hooks for Claude Code (`.claude/settings.json`)
+- `--no-rtk` — Skip RTK hook setup even if rtk is installed
 - `--force` — Overwrite existing files (default: skip with warning)
 - `--max-file-size <KB>` — Skip files larger than N KB when generating INDEX.md (default: 512)
 
@@ -57,6 +58,8 @@ indxr watch [PATH] [OPTIONS]
 - `--max-depth <N>` — Maximum directory depth
 - `-e, --exclude <PATTERNS>` — Glob patterns to exclude
 - `--no-gitignore` — Don't respect .gitignore
+- `--member <NAMES>` — Specific workspace member(s) to index (comma-separated names)
+- `--no-workspace` — Disable workspace detection (treat root as a single project)
 - `--debounce-ms <MS>` — Debounce timeout in milliseconds (default: 300)
 - `-q, --quiet` — Suppress progress output
 
@@ -78,6 +81,8 @@ indxr diff --since <REF> [PATH] [OPTIONS]
 - `--pr <NUMBER>` — GitHub PR number to diff against its base branch (resolves via GitHub API)
 - `--since <REF>` — Git ref to diff against (branch, tag, or commit)
 - `-f, --format <FORMAT>` — Output format: `markdown` (default) or `json`
+- `--member <NAMES>` — Specific workspace member(s) to diff (comma-separated names)
+- `--no-workspace` — Disable workspace detection
 
 **Authentication (for `--pr`):**
 
@@ -117,8 +122,32 @@ indxr serve [PATH] [OPTIONS]
 - `--max-depth <N>` — Maximum directory depth
 - `-e, --exclude <PATTERNS>` — Glob patterns to exclude
 - `--no-gitignore` — Don't respect .gitignore
+- `--member <NAMES>` — Specific workspace member(s) to index (comma-separated names)
+- `--no-workspace` — Disable workspace detection (treat root as a single project)
 - `--watch` — Watch for file changes and auto-reindex the in-memory index
 - `--debounce-ms <MS>` — Debounce timeout in milliseconds, requires `--watch` (default: 300)
+- `--http <ADDR>` — Start Streamable HTTP server instead of stdio (e.g., `127.0.0.1:8080` or `:8080`; requires `--features http`)
+
+### `members`
+
+List detected workspace members (Cargo workspaces, npm workspaces, Go workspaces).
+
+```bash
+indxr members [PATH]
+```
+
+**Arguments:**
+- `[PATH]` — Root directory (default: `.`)
+
+**Example:**
+```bash
+indxr members
+# Output:
+#   Workspace: cargo (3 members)
+#     core        packages/core
+#     cli         packages/cli
+#     web         packages/web
+```
 
 ## Arguments
 

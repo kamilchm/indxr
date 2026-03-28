@@ -153,9 +153,14 @@ indxr --public-only -d signatures -o API.md
 indxr --kind function --symbol test
 ```
 
-### Scope to backend in a monorepo
+### Scope to a workspace member in a monorepo
 
 ```bash
+# Native workspace support (auto-detects Cargo/npm/Go workspaces)
+indxr serve --member backend
+indxr watch --member backend
+
+# Or use path filtering for non-workspace layouts
 indxr --filter-path packages/backend -l rust,python
 ```
 

@@ -114,6 +114,21 @@ indxr --graph dot --graph-level symbol --filter-path src/model
 indxr --graph json -o deps.json
 ```
 
+## MCP Tool
+
+The `get_dependency_graph` MCP tool provides the same functionality for live agent queries:
+
+```json
+{
+  "params": {
+    "name": "get_dependency_graph",
+    "arguments": { "path": "src/parser", "format": "mermaid", "depth": 2 }
+  }
+}
+```
+
+Parameters: `path` (scope), `level` (`file`/`symbol`), `format` (`dot`/`mermaid`/`json`), `depth` (hop limit). See [MCP Server docs](mcp-server.md) for full details.
+
 ## Combining with Other Options
 
 The `--graph` flag replaces normal index output. Other flags that affect it:

@@ -68,7 +68,7 @@ indxr init --global           # install globally for all projects
 indxr init --global --cursor  # global Cursor only
 ```
 
-This creates all configuration files, agent instruction files, PreToolUse hooks, and an initial INDEX.md in one command. Use `--no-index` to skip INDEX.md generation, `--no-hooks` to skip PreToolUse hooks, `--force` to overwrite existing files.
+This creates all configuration files, agent instruction files, PreToolUse hooks, and an initial INDEX.md in one command. Use `--no-index` to skip INDEX.md generation, `--no-hooks` to skip PreToolUse hooks, `--no-rtk` to skip RTK hook setup, `--force` to overwrite existing files.
 
 Use `--global` to install indxr into user-level config directories so it's available for every project without per-project setup. Global mode merges the indxr MCP server entry into existing config files (preserving other servers and settings).
 
@@ -99,7 +99,7 @@ Or use the CLI to add it:
 claude mcp add indxr -- indxr serve .
 ```
 
-Claude Code will automatically discover all 22 MCP tools — `search_relevant`, `explain_symbol`, `get_callers`, `batch_file_summaries`, `get_public_api`, `get_diff_summary`, `get_hotspots`, `get_health`, `get_type_flow`, and more — during conversations.
+Claude Code will automatically discover all 23 MCP tools — `search_relevant`, `explain_symbol`, `get_callers`, `batch_file_summaries`, `get_public_api`, `get_diff_summary`, `get_hotspots`, `get_health`, `get_type_flow`, `list_workspace_members`, and more — during conversations.
 
 **Reinforcing MCP usage with PreToolUse hooks:**
 
@@ -436,7 +436,25 @@ Auto-generate an index on every commit for agents to consume:
     git diff --cached --quiet || git commit -m "chore: update codebase index"
 ```
 
-### Pattern 8: Multi-Language Projects
+### Pattern 8: Monorepo / Workspace Projects
+
+For monorepos with multiple packages, use native workspace support:
+
+```bash
+# List detected workspace members
+indxr members
+
+# Serve only a specific member
+indxr serve --member backend
+
+# MCP: scope any tool to a member
+# get_file_summary(path: "src/lib.rs", member: "core")
+# lookup_symbol(name: "Config", member: "cli")
+```
+
+indxr auto-detects Cargo workspaces, npm/Yarn/pnpm workspaces, and Go workspaces. Use `--no-workspace` to disable detection and treat the root as a single project.
+
+### Pattern 9: Multi-Language Projects
 
 For polyglot codebases, scope by language:
 

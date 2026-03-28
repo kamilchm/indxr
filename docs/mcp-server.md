@@ -51,6 +51,8 @@ Options:
   --max-depth <N>            Maximum directory depth
   -e, --exclude <PATTERNS>   Glob patterns to exclude
   --no-gitignore             Don't respect .gitignore
+  --member <NAMES>           Specific workspace member(s) to index (comma-separated)
+  --no-workspace             Disable workspace detection (treat root as single project)
   --watch                    Watch for file changes and auto-reindex
   --debounce-ms <MS>         Debounce timeout in milliseconds [default: 300]
   --http <ADDR>              Start Streamable HTTP server (requires 'http' feature)
@@ -81,6 +83,37 @@ The MCP server implements JSON-RPC 2.0 over stdin/stdout, following the MCP spec
 5. Client sends SIGTERM or closes stdin to shut down
 
 ## Available Tools
+
+> **Workspace support:** In monorepo/workspace projects (Cargo, npm, Go), most tools accept an optional `member` parameter (string) to scope the query to a specific workspace member by name. If omitted, all members are searched.
+
+### `list_workspace_members`
+
+List workspace members (monorepo packages/crates). Returns member names, paths, and workspace type. In single-project mode, returns one member.
+
+**Parameters:** None.
+
+**Example request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "list_workspace_members",
+    "arguments": {}
+  }
+}
+```
+
+**Example response:**
+```json
+{
+  "content": [{
+    "type": "text",
+    "text": "{\"workspace_type\":\"cargo\",\"members\":[{\"name\":\"core\",\"path\":\"packages/core\"},{\"name\":\"cli\",\"path\":\"packages/cli\"}]}"
+  }]
+}
+```
 
 ### `lookup_symbol`
 
@@ -446,6 +479,29 @@ Find test functions for a symbol by naming convention and file association.
   "params": {
     "name": "get_related_tests",
     "arguments": { "symbol": "apply_token_budget" }
+  }
+}
+```
+
+### `get_dependency_graph`
+
+Get file-level or symbol-level dependency graph. Shows import relationships between files or extends/implements relationships between symbols. Output in DOT (Graphviz), Mermaid, or JSON format.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `path` | string | no | Scope to a subtree (file or directory prefix). Omit for entire codebase |
+| `level` | string | no | Graph granularity: `file` (default) or `symbol` |
+| `format` | string | no | Output format: `dot`, `mermaid` (default), or `json` |
+| `depth` | number | no | Max edge hops from scoped files/symbols (default: unlimited) |
+
+**Example:**
+```json
+{
+  "params": {
+    "name": "get_dependency_graph",
+    "arguments": { "path": "src/parser", "format": "mermaid", "depth": 2 }
   }
 }
 ```

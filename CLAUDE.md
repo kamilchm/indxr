@@ -25,6 +25,8 @@ An MCP server called `indxr` is available. **Always use indxr tools before the R
 | `get_hotspots` | ~200-500 | Most complex functions ranked by composite score |
 | `get_health` | ~200-400 | Codebase health summary with aggregate complexity metrics |
 | `get_type_flow` | ~200-500 | Track which functions produce/consume a type across the codebase |
+| `get_dependency_graph` | ~200-500 | File or symbol dependency graph (DOT, Mermaid, JSON) |
+| `list_workspace_members` | ~100-200 | List monorepo workspace members (Cargo, npm, Go) |
 | `read_source` (symbol) | ~50-300 | Read one function/struct. Supports `symbols` array and `collapse`. |
 | `get_token_estimate` | ~100 | Check cost before reading. Supports `directory`/`glob`. |
 | `Read` (full file) | **500-10000+** | ONLY when editing or need exact formatting |
@@ -52,7 +54,11 @@ An MCP server called `indxr` is available. **Always use indxr tools before the R
 17. `get_hotspots` — get the most complex functions/methods ranked by composite score. Supports `path`, `min_complexity`, `sort_by`, and `compact` params.
 18. `get_health` — get codebase health summary: aggregate complexity, documentation coverage, test ratio, hottest files. Supports `path` filter.
 19. `get_type_flow` — track where a type flows across function boundaries. Shows which functions produce (return) and consume (accept) a given type. Supports `path` filter, `include_fields`, `limit`, and `compact` params.
-20. `regenerate_index` — re-index after code changes. Updates INDEX.md, refreshes in-memory index, and reports what changed (delta).
+20. `get_dependency_graph` — get file-level or symbol-level dependency graph. Supports `path`, `level` (file/symbol), `format` (dot/mermaid/json), and `depth` params.
+21. `list_workspace_members` — list detected workspace members (Cargo, npm, Go workspaces). Use this to discover member names for the `member` param.
+22. `regenerate_index` — re-index after code changes. Updates INDEX.md, refreshes in-memory index, and reports what changed (delta).
+
+> **Workspace support:** Most tools accept an optional `member` param to scope queries to a specific workspace member by name.
 
 ### Compact output mode
 Tools that return lists (`lookup_symbol`, `list_declarations`, `search_signatures`, `search_relevant`, `get_hotspots`, `get_type_flow`) support a `compact: true` param that returns columnar `{columns, rows}` format instead of objects, saving ~30% tokens.
@@ -136,7 +142,14 @@ indxr init --codex                           # OpenAI Codex CLI only
 indxr init --global                          # install globally for all projects
 indxr init --global --cursor                 # global Cursor only
 indxr init --no-index --no-hooks             # config files only, no INDEX.md or hooks
+indxr init --no-rtk                          # skip RTK hook setup
 indxr init --force                           # overwrite existing files
+
+# Workspace / monorepo
+indxr members                                # list detected workspace members
+indxr serve --member core                    # serve only the "core" member
+indxr watch --member core,cli                # watch specific members
+indxr serve --no-workspace                   # disable workspace detection
 
 # Complexity hotspots
 indxr --hotspots                             # top 30 most complex functions
@@ -177,7 +190,7 @@ Key source files:
 - `src/cli.rs` — clap argument definitions
 - `src/indexer.rs` — core indexing orchestration
 - `src/mcp/mod.rs` — MCP server loop, JSON-RPC protocol handling
-- `src/mcp/tools.rs` — tool definitions, dispatch, and 20 tool implementations
+- `src/mcp/tools.rs` — tool definitions, dispatch, and 23 tool implementations
 - `src/mcp/http.rs` — Streamable HTTP transport (axum, feature-gated behind `http`)
 - `src/mcp/helpers.rs` — shared structs, search/scoring/glob/string helpers
 - `src/mcp/tests.rs` — MCP module tests
@@ -193,5 +206,6 @@ Key source files:
 - `src/walker/` — directory traversal
 - `src/init.rs` — `indxr init` command (agent config scaffolding)
 - `src/watch.rs` — file watching, debounced re-indexing (`indxr watch` + `serve --watch`)
+- `src/workspace.rs` — workspace detection (Cargo, npm, Go) and multi-root support
 - `src/utils.rs` — shared utility functions (word boundary matching, etc.)
 - `src/cache/` — incremental binary caching
