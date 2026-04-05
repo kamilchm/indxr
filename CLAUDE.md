@@ -8,7 +8,7 @@ An MCP server called `indxr` is available. **Always use indxr tools before the R
 
 ### Token savings reference
 
-The MCP server defaults to **3 compound tools** (`find`, `summarize`, `read`). All 26 tools (3 compound + 23 granular) are available with `--all-tools`. With `--features wiki`, 3 additional wiki tools are available.
+The MCP server defaults to **3 compound tools** (`find`, `summarize`, `read`). All 26 tools (3 compound + 23 granular) are available with `--all-tools`. With `--features wiki`, 6 additional wiki tools are available.
 
 | Action | Approx tokens | When to use |
 |--------|--------------|-------------|
@@ -68,6 +68,9 @@ If a wiki has been generated (`indxr wiki generate`), these tools are available 
 27. `wiki_search(query)` — search the codebase knowledge wiki by keyword or concept. Returns matching pages with excerpts. **Use this first to understand modules, architecture, or design decisions before diving into source code.**
 28. `wiki_read(page)` — read a wiki page by ID (e.g. `"architecture"`, `"mod-mcp"`). Returns full page content with metadata.
 29. `wiki_status()` — check wiki health: page count, staleness (commits behind HEAD), source file coverage.
+30. `wiki_contribute(page, content, title?, page_type?, source_files?)` — write knowledge back to the wiki. Creates a new page or updates an existing one. Use `[[page-id]]` links in content for automatic cross-referencing. **Use this to file synthesized answers, analyses, or discovered connections that should persist beyond the current conversation.**
+31. `wiki_generate()` — initialize a new wiki and return codebase structural context for planning pages. The agent plans which pages to create from the context, then calls `wiki_contribute` for each page. No API keys needed.
+32. `wiki_update(since?)` — analyze code changes and return affected wiki pages with diff context. The agent rewrites each affected page and saves via `wiki_contribute`. No API keys needed.
 
 > **Workspace support:** Most tools accept an optional `member` param to scope queries to a specific workspace member by name.
 

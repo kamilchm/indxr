@@ -3442,7 +3442,7 @@ mod wiki_tests {
         assert!(names.contains(&"wiki_search"));
         assert!(names.contains(&"wiki_read"));
         assert!(names.contains(&"wiki_status"));
-        assert_eq!(names.len(), 6); // 3 compound + 3 wiki
+        assert_eq!(names.len(), 9); // 3 compound + 6 wiki
     }
 
     #[test]
@@ -3450,9 +3450,14 @@ mod wiki_tests {
         let defs = tool_definitions(false, false, false);
         let tools = defs["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        // wiki_generate should always be listed (it's how you create a wiki)
+        assert!(names.contains(&"wiki_generate"));
+        // The rest require an existing wiki
         assert!(!names.contains(&"wiki_search"));
         assert!(!names.contains(&"wiki_read"));
         assert!(!names.contains(&"wiki_status"));
+        assert!(!names.contains(&"wiki_contribute"));
+        assert!(!names.contains(&"wiki_update"));
     }
 
     #[test]
@@ -3484,5 +3489,283 @@ mod wiki_tests {
         let content: Value =
             serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
         assert!(content["matches"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn test_wiki_contribute_create_new_page() {
+        let mut store = make_test_wiki_store();
+        let initial_count = store.pages.len();
+        let result = tool_wiki_contribute(
+            &mut store,
+            &json!({
+                "page": "error-handling",
+                "title": "Error Handling Patterns",
+                "content": "# Error Handling\n\nThis codebase uses `anyhow` for error propagation.\n\nSee also [[architecture]] for the overall design.",
+                "page_type": "topic",
+                "source_files": ["src/error.rs"]
+            }),
+        );
+        let content: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(content["action"], "created");
+        assert_eq!(content["page_id"], "error-handling");
+        assert_eq!(content["title"], "Error Handling Patterns");
+        assert_eq!(content["type"], "topic");
+        assert_eq!(
+            content["total_wiki_pages"].as_u64().unwrap(),
+            (initial_count + 1) as u64
+        );
+        // Check wiki links were extracted
+        let links = content["links_to"].as_array().unwrap();
+        assert!(links.iter().any(|l| l == "architecture"));
+
+        // Page should be findable in store
+        let page = store.get_page("error-handling").unwrap();
+        assert_eq!(page.frontmatter.title, "Error Handling Patterns");
+        assert_eq!(page.frontmatter.source_files, vec!["src/error.rs"]);
+    }
+
+    #[test]
+    fn test_wiki_contribute_update_existing_page() {
+        let mut store = make_test_wiki_store();
+        let result = tool_wiki_contribute(
+            &mut store,
+            &json!({
+                "page": "mod-mcp",
+                "content": "# MCP Server (Updated)\n\nNow with wiki_contribute support.\n\nSee [[mod-parser]] for parser details.",
+                "source_files": ["src/mcp/wiki.rs"]
+            }),
+        );
+        let content: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(content["action"], "updated");
+        assert_eq!(content["page_id"], "mod-mcp");
+
+        let page = store.get_page("mod-mcp").unwrap();
+        assert!(page.content.contains("wiki_contribute support"));
+        // Original source files should be preserved + new one merged
+        assert!(
+            page.frontmatter
+                .source_files
+                .contains(&"src/mcp/mod.rs".to_string())
+        );
+        assert!(
+            page.frontmatter
+                .source_files
+                .contains(&"src/mcp/tools.rs".to_string())
+        );
+        assert!(
+            page.frontmatter
+                .source_files
+                .contains(&"src/mcp/wiki.rs".to_string())
+        );
+        // Links should reflect new content
+        assert!(
+            page.frontmatter
+                .links_to
+                .contains(&"mod-parser".to_string())
+        );
+        // page_type should be preserved
+        assert_eq!(page.frontmatter.page_type, PageType::Module);
+    }
+
+    #[test]
+    fn test_wiki_contribute_missing_page_param() {
+        let mut store = make_test_wiki_store();
+        let result = tool_wiki_contribute(&mut store, &json!({"content": "test"}));
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("Missing required parameter: page"));
+    }
+
+    #[test]
+    fn test_wiki_contribute_missing_content_param() {
+        let mut store = make_test_wiki_store();
+        let result = tool_wiki_contribute(&mut store, &json!({"page": "test"}));
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("Missing required parameter: content"));
+    }
+
+    #[test]
+    fn test_wiki_contribute_new_page_requires_title() {
+        let mut store = make_test_wiki_store();
+        let result = tool_wiki_contribute(
+            &mut store,
+            &json!({"page": "new-page", "content": "some content"}),
+        );
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("Missing required parameter: title"));
+    }
+
+    #[test]
+    fn test_wiki_contribute_invalid_page_id() {
+        let mut store = make_test_wiki_store();
+        let result = tool_wiki_contribute(
+            &mut store,
+            &json!({"page": "../../etc", "title": "Bad", "content": "test"}),
+        );
+        let text = result["content"][0]["text"].as_str().unwrap();
+        // sanitize_id("../../etc") = "etc" which is valid, so this should succeed
+        let content: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(content["page_id"], "etc");
+    }
+
+    #[test]
+    fn test_wiki_contribute_default_page_type() {
+        let mut store = make_test_wiki_store();
+        let result = tool_wiki_contribute(
+            &mut store,
+            &json!({
+                "page": "my-analysis",
+                "title": "My Analysis",
+                "content": "Some analysis."
+            }),
+        );
+        let content: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(content["type"], "topic");
+    }
+
+    #[test]
+    fn test_wiki_contribute_listed_in_tools() {
+        let defs = tool_definitions(false, false, true);
+        let tools = defs["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"wiki_contribute"));
+    }
+
+    #[test]
+    fn test_wiki_generate_and_update_listed_in_tools() {
+        let defs = tool_definitions(false, false, true);
+        let tools = defs["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"wiki_generate"));
+        assert!(names.contains(&"wiki_update"));
+    }
+
+    /// Build a workspace rooted in a temp dir (for tests that write to disk).
+    fn make_workspace_in(root: &std::path::Path) -> WorkspaceIndex {
+        let mut index = make_test_index();
+        index.root = root.to_path_buf();
+        index.root_name = root.file_name().unwrap().to_string_lossy().to_string();
+        wrap_workspace(index)
+    }
+
+    #[test]
+    fn test_wiki_generate_returns_context() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = make_workspace_in(tmp.path());
+        let result = tool_wiki_generate(&ws, &json!({}));
+        let text = result["content"][0]["text"].as_str().unwrap();
+        let content: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(content["action"], "initialized");
+        assert!(
+            content["context"]
+                .as_str()
+                .unwrap()
+                .contains("Codebase Structural Index")
+        );
+        assert!(
+            content["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("wiki_contribute")
+        );
+    }
+
+    #[test]
+    fn test_wiki_generate_blocks_when_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = make_workspace_in(tmp.path());
+
+        // First call should succeed
+        let result = tool_wiki_generate(&ws, &json!({}));
+        let text = result["content"][0]["text"].as_str().unwrap();
+        let content: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(content["action"], "initialized");
+
+        // Verify manifest was created
+        let manifest_path = tmp.path().join(".indxr").join("wiki").join("manifest.yaml");
+        assert!(
+            manifest_path.exists(),
+            "manifest.yaml should exist after wiki_generate"
+        );
+
+        // Second call without force should fail
+        let result2 = tool_wiki_generate(&ws, &json!({}));
+        let text2 = result2["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text2.contains("Wiki already exists"),
+            "Expected 'Wiki already exists' but got: {}",
+            text2
+        );
+
+        // With force=true should succeed again
+        let result3 = tool_wiki_generate(&ws, &json!({"force": true}));
+        let text3 = result3["content"][0]["text"].as_str().unwrap();
+        let content3: Value = serde_json::from_str(text3).unwrap();
+        assert_eq!(content3["action"], "initialized");
+    }
+
+    #[test]
+    fn test_wiki_update_no_wiki_dispatch() {
+        // Verify that wiki_update through handle_tools_call returns an error when no wiki exists
+        let index = make_test_index();
+        let mut ws = wrap_workspace(index);
+        let config = WorkspaceConfig {
+            workspace: crate::workspace::single_root_workspace(&ws.root),
+            template: IndexConfig {
+                root: ws.root.clone(),
+                cache_dir: ws.root.join(".cache"),
+                max_file_size: 512,
+                max_depth: None,
+                exclude: vec![],
+                no_gitignore: false,
+            },
+        };
+        let registry = ParserRegistry::new();
+        let mut wiki_store: WikiStoreOption = None;
+
+        let resp = crate::mcp::handle_tools_call(
+            json!(1),
+            &mut ws,
+            &config,
+            &registry,
+            &json!({"name": "wiki_update", "arguments": {}}),
+            &mut wiki_store,
+        );
+        let text = resp.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(text.contains("No wiki found"));
+    }
+
+    #[test]
+    fn test_wiki_update_no_changes() {
+        // Use the real repo root so git commands work
+        let root = std::env::current_dir().unwrap();
+        let mut store = make_test_wiki_store();
+        store.root = root.join(".indxr").join("wiki");
+        let mut index = make_test_index();
+        index.root = root.clone();
+        let ws = wrap_workspace(index);
+        // Use HEAD so there are no changes
+        let registry = ParserRegistry::new();
+        let result = tool_wiki_update(&store, &ws, &registry, &json!({"since": "HEAD"}));
+        let text = result["content"][0]["text"].as_str().unwrap();
+        let content: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(content["action"], "no_changes");
+    }
+
+    #[test]
+    fn test_wiki_update_empty_ref() {
+        let mut store = make_test_wiki_store();
+        store.manifest.generated_at_ref = String::new();
+        let index = make_test_index();
+        let ws = wrap_workspace(index);
+        let registry = ParserRegistry::new();
+        let result = tool_wiki_update(&store, &ws, &registry, &json!({}));
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("No git ref to diff against"));
     }
 }

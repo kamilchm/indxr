@@ -606,50 +606,114 @@ pub(super) fn tool_definitions(is_workspace: bool, all_tools: bool, wiki_availab
         ]
     });
 
-    // Append wiki tools when the wiki feature is compiled in and a wiki exists.
+    // Append wiki tools when the wiki feature is compiled in.
+    // wiki_generate is always listed (it's how you create a wiki).
+    // The rest require an existing wiki.
     #[cfg(feature = "wiki")]
-    if wiki_available {
+    {
         if let Some(tools) = defs["tools"].as_array_mut() {
             tools.push(json!({
-                "name": "wiki_search",
-                "description": "Search the codebase knowledge wiki by keyword or concept. Returns matching pages with excerpts. Use this to understand modules, architecture, or design decisions before diving into source code.",
+                "name": "wiki_generate",
+                "description": "Initialize a new wiki and return the codebase structural context for planning pages. After calling this, plan which pages to create (architecture, module, entity, topic) based on the returned context, then call wiki_contribute for each page. Finish with an index page. Fails if a wiki already exists unless force=true.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Search term or concept"
+                        "force": {
+                            "type": "boolean",
+                            "description": "Overwrite existing wiki if one exists (default: false)"
+                        }
+                    }
+                }
+            }));
+        }
+        if wiki_available {
+            if let Some(tools) = defs["tools"].as_array_mut() {
+                tools.push(json!({
+                    "name": "wiki_search",
+                    "description": "Search the codebase knowledge wiki by keyword or concept. Returns matching pages with excerpts. Use this to understand modules, architecture, or design decisions before diving into source code.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Search term or concept"
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Max results (default: 5)"
+                            }
                         },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Max results (default: 5)"
+                        "required": ["query"]
+                    }
+                }));
+                tools.push(json!({
+                    "name": "wiki_read",
+                    "description": "Read a wiki page by ID (e.g. 'architecture', 'mod-mcp'). Returns full page content with metadata.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "page": {
+                                "type": "string",
+                                "description": "Page ID or partial title to search"
+                            }
+                        },
+                        "required": ["page"]
+                    }
+                }));
+                tools.push(json!({
+                    "name": "wiki_status",
+                    "description": "Check wiki health: page count, how stale it is, source file coverage.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }));
+                tools.push(json!({
+                    "name": "wiki_contribute",
+                    "description": "Write knowledge back to the wiki. Create a new page or update an existing one. Use this to file synthesized answers, analyses, or discovered connections that should persist beyond this conversation.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "page": {
+                                "type": "string",
+                                "description": "Page ID (slug). If it exists, the page is updated; if not, a new page is created."
+                            },
+                            "title": {
+                                "type": "string",
+                                "description": "Human-readable title (required for new pages, optional for updates)"
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "Markdown content for the page"
+                            },
+                            "page_type": {
+                                "type": "string",
+                                "enum": ["architecture", "module", "entity", "topic"],
+                                "description": "Page type (default: topic). Only used when creating new pages."
+                            },
+                            "source_files": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "Source files this page relates to (optional)"
+                            }
+                        },
+                        "required": ["page", "content"]
+                    }
+                }));
+                tools.push(json!({
+                    "name": "wiki_update",
+                    "description": "Analyze code changes since last wiki generation and return affected pages with diff context. For each affected page, rewrite its content based on the diff and current content, then call wiki_contribute to save. No API keys needed — you drive the updates.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "since": {
+                                "type": "string",
+                                "description": "Git ref to diff against (default: wiki's stored ref)"
+                            }
                         }
-                    },
-                    "required": ["query"]
-                }
-            }));
-            tools.push(json!({
-                "name": "wiki_read",
-                "description": "Read a wiki page by ID (e.g. 'architecture', 'mod-mcp'). Returns full page content with metadata.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "page": {
-                            "type": "string",
-                            "description": "Page ID or partial title to search"
-                        }
-                    },
-                    "required": ["page"]
-                }
-            }));
-            tools.push(json!({
-                "name": "wiki_status",
-                "description": "Check wiki health: page count, how stale it is, source file coverage.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {}
-                }
-            }));
+                    }
+                }));
+            }
         }
     }
     let _ = wiki_available; // suppress unused warning when wiki feature is off
@@ -2789,5 +2853,320 @@ pub(super) fn tool_wiki_status(
             "total_files": health.total_files,
             "percentage": health.coverage_pct
         }
+    }))
+}
+
+#[cfg(feature = "wiki")]
+pub(super) fn tool_wiki_contribute(
+    store: &mut crate::wiki::store::WikiStore,
+    args: &Value,
+) -> Value {
+    use crate::wiki::extract_wiki_links;
+    use crate::wiki::page::{Frontmatter, PageType, WikiPage, sanitize_id};
+
+    let page_id_raw = match args.get("page").and_then(|v| v.as_str()) {
+        Some(p) => p,
+        None => return tool_error("Missing required parameter: page"),
+    };
+    let page_id = sanitize_id(page_id_raw);
+    if page_id.is_empty() {
+        return tool_error("Invalid page ID: must contain at least one alphanumeric character");
+    }
+
+    let content = match args.get("content").and_then(|v| v.as_str()) {
+        Some(c) => c.to_string(),
+        None => return tool_error("Missing required parameter: content"),
+    };
+
+    let links_to = extract_wiki_links(&content);
+    let source_files: Vec<String> = args
+        .get("source_files")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+
+    let existing = store.pages.iter().find(|p| p.frontmatter.id == page_id);
+    let action;
+
+    if let Some(old) = existing {
+        // Update existing page — preserve page_type, merge source_files
+        let mut merged_sources = old.frontmatter.source_files.clone();
+        for sf in &source_files {
+            if !merged_sources.contains(sf) {
+                merged_sources.push(sf.clone());
+            }
+        }
+        let title = args
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| old.frontmatter.title.clone());
+
+        let page = WikiPage {
+            frontmatter: Frontmatter {
+                id: page_id.clone(),
+                title,
+                page_type: old.frontmatter.page_type.clone(),
+                source_files: merged_sources,
+                generated_at_ref: old.frontmatter.generated_at_ref.clone(),
+                generated_at: now.clone(),
+                links_to,
+                covers: old.frontmatter.covers.clone(),
+            },
+            content,
+        };
+        store.upsert_page(page);
+        action = "updated";
+    } else {
+        // Create new page
+        let title = match args.get("title").and_then(|v| v.as_str()) {
+            Some(t) => t.to_string(),
+            None => {
+                return tool_error("Missing required parameter: title (required for new pages)");
+            }
+        };
+
+        let page_type = match args.get("page_type").and_then(|v| v.as_str()) {
+            Some("architecture") => PageType::Architecture,
+            Some("module") => PageType::Module,
+            Some("entity") => PageType::Entity,
+            Some("topic") | None => PageType::Topic,
+            Some(other) => {
+                return tool_error(&format!(
+                    "Invalid page_type: '{}'. Must be one of: architecture, module, entity, topic",
+                    other
+                ));
+            }
+        };
+
+        let page = WikiPage {
+            frontmatter: Frontmatter {
+                id: page_id.clone(),
+                title: title.clone(),
+                page_type,
+                source_files,
+                generated_at_ref: store.manifest.generated_at_ref.clone(),
+                generated_at: now.clone(),
+                links_to,
+                covers: Vec::new(),
+            },
+            content,
+        };
+        store.upsert_page(page);
+        action = "created";
+    };
+
+    // Persist to disk
+    if let Err(e) = store.save_incremental(&page_id) {
+        return tool_error(&format!("Failed to save wiki page: {}", e));
+    }
+
+    let page = store.get_page(&page_id).unwrap();
+    tool_result(json!({
+        "action": action,
+        "page_id": page_id,
+        "title": page.frontmatter.title,
+        "type": page.frontmatter.page_type.as_str(),
+        "links_to": page.frontmatter.links_to,
+        "total_wiki_pages": store.pages.len(),
+    }))
+}
+
+#[cfg(feature = "wiki")]
+pub(super) fn tool_wiki_generate(workspace: &WorkspaceIndex, args: &Value) -> Value {
+    use crate::wiki::build_planning_context;
+    use crate::wiki::store::WikiStore;
+
+    let wiki_dir = workspace.root.join(".indxr").join("wiki");
+
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    // Guard against overwriting an existing wiki
+    if !force && wiki_dir.join("manifest.yaml").exists() {
+        return tool_error(
+            "Wiki already exists. Use `wiki_update` to update it, or pass force=true to regenerate from scratch.",
+        );
+    }
+
+    // Initialize an empty wiki store on disk so wiki_contribute can write to it
+    let store = WikiStore::new(&wiki_dir);
+    if let Err(e) = store.save() {
+        return tool_error(&format!("Failed to initialize wiki store: {}", e));
+    }
+
+    let context = build_planning_context(workspace);
+
+    let instructions = r#"Plan and create wiki pages for this codebase using the structural context above.
+
+## Page types
+- **architecture** (exactly 1): High-level design, data flow, key decisions
+- **module**: One per significant directory/module (3+ files or 500+ lines)
+- **entity**: Key types central to the architecture (major structs/traits/enums used across files)
+- **topic**: Cross-cutting concerns spanning 3+ modules (error handling, caching, etc.)
+- **index** (exactly 1, create last): Cross-reference table of contents
+
+## Workflow
+1. Analyze the structural context to decide which pages to create
+2. For each page, use `summarize` to understand source files, then call `wiki_contribute` with:
+   - `page`: slug ID (e.g. "architecture", "mod-parser", "entity-cache")
+   - `title`: human-readable title
+   - `content`: markdown content (use [[page-id]] for cross-references)
+   - `page_type`: one of architecture, module, entity, topic
+   - `source_files`: array of source file paths this page covers
+3. Create the index page last (page: "index", page_type: "topic")
+
+## Content guidelines
+- Audience: AI coding agents, not humans. Be precise about types, signatures, invariants.
+- Focus on WHY (design decisions, invariants, data flow), not WHAT (the structural index already has that).
+- Use [[page-id]] links for cross-references between pages.
+- Every source file should appear in at least one page's source_files.
+- Aim for 5-20 pages total."#;
+
+    tool_result(json!({
+        "action": "initialized",
+        "wiki_dir": wiki_dir.to_string_lossy(),
+        "context": context,
+        "instructions": instructions,
+    }))
+}
+
+#[cfg(feature = "wiki")]
+pub(super) fn tool_wiki_update(
+    store: &crate::wiki::store::WikiStore,
+    workspace: &WorkspaceIndex,
+    registry: &crate::parser::ParserRegistry,
+    args: &Value,
+) -> Value {
+    use std::collections::HashSet;
+
+    use crate::diff;
+    use crate::languages::Language;
+    use crate::wiki::page::PageType;
+
+    let since_ref = args
+        .get("since")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| store.manifest.generated_at_ref.clone());
+
+    if since_ref.is_empty() {
+        return tool_error(
+            "No git ref to diff against. Pass `since` param or regenerate the wiki.",
+        );
+    }
+
+    // Get changed files
+    let changed_paths = match diff::get_changed_files(&workspace.root, &since_ref) {
+        Ok(paths) => paths,
+        Err(e) => return tool_error(&format!("Failed to get changed files: {}", e)),
+    };
+
+    if changed_paths.is_empty() {
+        return tool_result(json!({
+            "action": "no_changes",
+            "since_ref": since_ref,
+            "message": "No file changes detected since the given ref.",
+        }));
+    }
+
+    // Build structural diff
+    let all_files: Vec<&crate::model::FileIndex> = workspace
+        .members
+        .iter()
+        .flat_map(|m| m.index.files.iter())
+        .collect();
+    let mut old_files = std::collections::HashMap::new();
+    for path in &changed_paths {
+        if let Ok(Some(old_content)) = diff::get_file_at_ref(&workspace.root, path, &since_ref) {
+            if let Some(lang) = Language::detect(path) {
+                if let Some(parser) = registry.get_parser(&lang) {
+                    if let Ok(index) = parser.parse_file(path, &old_content) {
+                        old_files.insert(path.clone(), index);
+                    }
+                }
+            }
+        }
+    }
+    let structural_diff = diff::compute_structural_diff(all_files, &old_files, &changed_paths);
+    let diff_summary = diff::format_diff_markdown(&structural_diff);
+
+    // Find affected pages
+    let changed_set: HashSet<String> = changed_paths
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+
+    let affected_pages: Vec<Value> = store
+        .pages
+        .iter()
+        .filter(|page| {
+            page.frontmatter.page_type != PageType::Index
+                && page
+                    .frontmatter
+                    .source_files
+                    .iter()
+                    .any(|sf| changed_set.contains(sf))
+        })
+        .map(|page| {
+            json!({
+                "id": page.frontmatter.id,
+                "title": page.frontmatter.title,
+                "page_type": page.frontmatter.page_type.as_str(),
+                "source_files": page.frontmatter.source_files,
+                "current_content": page.content,
+            })
+        })
+        .collect();
+
+    if affected_pages.is_empty() {
+        return tool_result(json!({
+            "action": "no_affected_pages",
+            "since_ref": since_ref,
+            "changed_files": changed_paths.len(),
+            "message": "Files changed but no existing wiki pages cover them.",
+        }));
+    }
+
+    // All pages list for cross-referencing
+    let all_pages: Vec<Value> = store
+        .pages
+        .iter()
+        .map(|p| {
+            json!({
+                "id": p.frontmatter.id,
+                "title": p.frontmatter.title,
+            })
+        })
+        .collect();
+
+    let instructions = r#"Update the affected wiki pages based on the structural diff.
+
+## Workflow
+For each affected page:
+1. Review its current_content and the diff_summary to understand what changed
+2. Use `summarize` on changed source_files for fresh structural details if needed
+3. Rewrite the page content: preserve accurate existing knowledge, update what changed, flag significant architectural changes
+4. Call `wiki_contribute` with the page ID and new content
+
+## Content guidelines
+- Preserve existing knowledge that is still accurate
+- Update sections that reference changed declarations
+- Use [[page-id]] links for cross-references
+- If a page's source files were all deleted, note that the page may be obsolete"#;
+
+    tool_result(json!({
+        "action": "analysis",
+        "since_ref": since_ref,
+        "changed_files": changed_paths.len(),
+        "diff_summary": diff_summary,
+        "affected_pages": affected_pages,
+        "all_pages": all_pages,
+        "instructions": instructions,
     }))
 }
