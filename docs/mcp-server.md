@@ -57,6 +57,12 @@ Options:
   --debounce-ms <MS>         Debounce timeout in milliseconds [default: 300]
   --http <ADDR>              Start Streamable HTTP server (requires 'http' feature)
   --all-tools                Expose all 26 tools (default: 3 compound tools)
+
+Wiki options (requires --features wiki):
+  --wiki-auto-update         Auto-update wiki on file changes (requires --watch)
+  --wiki-debounce-ms <MS>    Wiki update debounce in milliseconds [default: 30000]
+  --wiki-model <MODEL>       LLM model override for wiki auto-updates
+  --wiki-exec <CMD>          External LLM command for wiki auto-updates
 ```
 
 ### Auto-Reindexing with `--watch`
@@ -702,6 +708,116 @@ Track where a type flows across function boundaries. Shows which functions produ
 - `producers_count` / `consumers_count` — total matches (before `limit` truncation)
 - `producers` — functions that return this type
 - `consumers` — functions that accept this type as a parameter (and fields, if `include_fields` is true)
+
+## Wiki Tools
+
+> *Requires `--features wiki`. `wiki_generate` is always listed; the remaining 8 tools appear once a wiki exists in `.indxr/wiki/`.*
+
+Wiki tools let agents generate, query, and grow a persistent knowledge wiki about the codebase. See [Wiki docs](wiki.md) for the full feature overview.
+
+### `wiki_generate`
+
+Initialize a new wiki and return the codebase structural context for planning pages. After calling this, plan which pages to create (architecture, module, entity, topic) based on the returned context, then call `wiki_contribute` for each page. Fails if a wiki already exists unless `force=true`.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `force` | boolean | no | Overwrite existing wiki if one exists (default: false) |
+
+### `wiki_search`
+
+Search the codebase knowledge wiki by keyword or concept. Returns matching pages with excerpts.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `query` | string | yes | Search term or concept |
+| `limit` | integer | no | Max results (default: 5) |
+| `include_failures` | boolean | no | Include failure pattern details in results (default: false) |
+
+### `wiki_read`
+
+Read a wiki page by ID (e.g. `"architecture"`, `"mod-mcp"`). Returns full page content with metadata.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `page` | string | yes | Page ID or partial title to search |
+
+### `wiki_status`
+
+Check wiki health: page count, how stale it is (commits behind HEAD), source file coverage.
+
+**Parameters:** None.
+
+### `wiki_contribute`
+
+Write knowledge back to the wiki. Create a new page or update an existing one. Supports contradiction tracking and failure pattern recording.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `page` | string | yes | Page ID (slug). If it exists, the page is updated; if not, a new page is created |
+| `content` | string | yes | Markdown content for the page. Use `[[page-id]]` for cross-references |
+| `title` | string | no | Human-readable title (required for new pages, optional for updates) |
+| `page_type` | string | no | Page type: `architecture`, `module`, `entity`, `topic` (default: `topic`). Only used for new pages |
+| `source_files` | string[] | no | Source files this page relates to |
+| `contradictions` | object[] | no | Contradictions to add (each: `description` required, `source` optional) |
+| `resolve_contradictions` | boolean | no | Mark all existing unresolved contradictions on this page as resolved |
+| `failures` | object[] | no | Failure patterns to add (each: `symptom`, `attempted_fix`, `diagnosis` required; `actual_fix`, `source_files` optional) |
+| `resolve_failures` | boolean | no | Mark all unresolved failures on this page as resolved |
+
+### `wiki_update`
+
+Analyze code changes since last wiki generation and return affected pages with diff context. For each affected page, rewrite its content based on the diff and current content, then call `wiki_contribute` to save. No API keys needed — the agent drives the updates.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `since` | string | no | Git ref to diff against (default: wiki's stored ref) |
+
+### `wiki_suggest_contribution`
+
+Given a synthesis or analysis, suggest which wiki page to update or whether to create a new one. Lightweight — uses keyword matching against existing pages, no LLM call needed.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `synthesis` | string | yes | The synthesized knowledge or analysis text |
+| `source_pages` | string[] | no | Wiki page IDs that were consulted during synthesis |
+
+### `wiki_compound`
+
+Compound new knowledge into the wiki. Takes a synthesis and automatically routes it to the best matching page, or creates a new topic page if no good match exists. Use this after answering questions that required cross-page synthesis.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `synthesis` | string | yes | The knowledge to compound into the wiki |
+| `source_pages` | string[] | no | Wiki page IDs that contributed to this synthesis |
+| `title` | string | no | Title for new page if one needs to be created |
+
+### `wiki_record_failure`
+
+Record a failed fix attempt so future agents can learn from it. Auto-routes to the best matching wiki page, or specify a target page explicitly.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `symptom` | string | yes | What was observed (error message, test failure, unexpected behavior) |
+| `attempted_fix` | string | yes | What fix was attempted |
+| `diagnosis` | string | yes | Why the fix didn't work / root cause analysis |
+| `actual_fix` | string | no | What actually worked (if known at recording time) |
+| `source_files` | string[] | no | Source files involved in this failure |
+| `page` | string | no | Target wiki page ID. If omitted, auto-routes to best matching page |
 
 ## Configuration for AI Tools
 

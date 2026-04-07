@@ -8,7 +8,7 @@ An MCP server called `indxr` is available. **Always use indxr tools before the R
 
 ### Token savings reference
 
-The MCP server defaults to **3 compound tools** (`find`, `summarize`, `read`). All 26 tools (3 compound + 23 granular) are available with `--all-tools`. With `--features wiki`, 7 additional wiki tools are available.
+The MCP server defaults to **3 compound tools** (`find`, `summarize`, `read`). All 26 tools (3 compound + 23 granular) are available with `--all-tools`. With `--features wiki`, 9 additional wiki tools are available.
 
 | Action | Approx tokens | When to use |
 |--------|--------------|-------------|
@@ -71,8 +71,9 @@ If a wiki has been generated (`indxr wiki generate`), these tools are available 
 30. `wiki_contribute(page, content, title?, page_type?, source_files?)` — write knowledge back to the wiki. Creates a new page or updates an existing one. Use `[[page-id]]` links in content for automatic cross-referencing. **Use this to file synthesized answers, analyses, or discovered connections that should persist beyond the current conversation.**
 31. `wiki_generate()` — initialize a new wiki and return codebase structural context for planning pages. The agent plans which pages to create from the context, then calls `wiki_contribute` for each page. No API keys needed.
 32. `wiki_update(since?)` — analyze code changes and return affected wiki pages with diff context. The agent rewrites each affected page and saves via `wiki_contribute`. No API keys needed.
-33. `wiki_compound(synthesis, source_pages?, title?)` — compound new knowledge into the wiki. Automatically routes the synthesis to the best matching page or creates a new topic page. **Use this after answering questions that drew from multiple wiki pages — it makes the wiki grow richer with every interaction.**
-34. `wiki_record_failure(symptom, attempted_fix, diagnosis, actual_fix?, source_files?, page?)` — record a failed fix attempt so future agents can learn from it. Auto-routes to the best matching wiki page, or specify a target page explicitly. **Use this when a fix attempt fails — future agents will see these failures via `wiki_search` before attempting similar fixes.**
+33. `wiki_suggest_contribution(synthesis, source_pages?)` — suggest which wiki page to update or whether to create a new one for a given synthesis. Lightweight (no LLM call) — uses keyword matching against existing pages.
+34. `wiki_compound(synthesis, source_pages?, title?)` — compound new knowledge into the wiki. Automatically routes the synthesis to the best matching page or creates a new topic page. **Use this after answering questions that drew from multiple wiki pages — it makes the wiki grow richer with every interaction.**
+35. `wiki_record_failure(symptom, attempted_fix, diagnosis, actual_fix?, source_files?, page?)` — record a failed fix attempt so future agents can learn from it. Auto-routes to the best matching wiki page, or specify a target page explicitly. **Use this when a fix attempt fails — future agents will see these failures via `wiki_search` before attempting similar fixes.**
 
 > **Workspace support:** Most tools accept an optional `member` param to scope queries to a specific workspace member by name.
 
@@ -145,6 +146,10 @@ indxr serve --watch --debounce-ms 500        # custom debounce timeout
 # MCP server (Streamable HTTP transport — requires --features http)
 indxr serve --http :8080                     # HTTP server on port 8080
 indxr serve --http 127.0.0.1:8080 --watch    # HTTP + auto-reindex on file changes
+
+# MCP server with wiki auto-update (requires --features wiki)
+indxr serve --watch --wiki-auto-update       # auto-update wiki on file changes
+indxr serve --watch --wiki-auto-update --wiki-debounce-ms 60000  # custom wiki debounce
 
 # File watching
 indxr watch                                  # watch cwd, keep INDEX.md updated

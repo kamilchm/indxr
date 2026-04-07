@@ -129,6 +129,80 @@ indxr serve [PATH] [OPTIONS]
 - `--http <ADDR>` — Start Streamable HTTP server instead of stdio (e.g., `127.0.0.1:8080` or `:8080`; requires `--features http`)
 - `--all-tools` — Expose all 26 tools (3 compound + 23 granular) including `search_relevant`, `lookup_symbol`, `get_file_summary`, `get_hotspots`, `get_health`, `get_type_flow`, `get_dependency_graph`, `get_diff_summary`, `get_token_estimate`, `list_workspace_members`, `regenerate_index`, and more. By default only the 3 compound tools (`find`, `summarize`, `read`) are listed to reduce per-request token overhead
 
+**Wiki options (requires `--features wiki`):**
+- `--wiki-auto-update` — Automatically update the wiki when file changes are detected (requires `--watch`). An LLM provider must be configured via `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `--wiki-exec`
+- `--wiki-debounce-ms <MS>` — Debounce timeout for wiki auto-updates in milliseconds (default: 30000). Wiki updates are expensive LLM calls, so this is much longer than the structural reindex debounce
+- `--wiki-model <MODEL>` — LLM model override for wiki auto-updates
+- `--wiki-exec <CMD>` — External command for LLM completions during wiki auto-updates (receives JSON on stdin, returns text on stdout)
+
+### `wiki`
+
+Generate and maintain a persistent codebase knowledge wiki. Requires `--features wiki`. See [Wiki docs](wiki.md) for full details.
+
+```bash
+indxr wiki <ACTION> [PATH] [OPTIONS]
+```
+
+**Actions:**
+
+- `generate` — Generate the wiki from scratch
+- `update` — Update wiki pages affected by recent code changes
+- `status` — Show wiki status (page count, staleness, coverage)
+- `compound <FILE>` — Compound synthesized knowledge into the wiki from a file or stdin (`-`)
+
+**Shared options:**
+- `--model <MODEL>` — LLM model to use (auto-detected from provider by default)
+- `--wiki-dir <DIR>` — Wiki output directory (default: `.indxr/wiki`)
+- `--exec <CMD>` — External command for LLM completions (receives JSON on stdin, returns text on stdout). Also configurable via `INDXR_LLM_COMMAND` env var
+
+**Action-specific options:**
+
+`generate`:
+- `--max-response-tokens <N>` — Maximum tokens per LLM response (default: 4096)
+- `--dry-run` — Plan wiki structure without generating pages
+
+`update`:
+- `--since <REF>` — Git ref to diff against (default: ref stored in wiki manifest)
+- `--max-response-tokens <N>` — Maximum tokens per LLM response (default: 4096)
+
+`compound`:
+- `--source-pages <PAGES>` — Wiki pages that contributed to the synthesis (comma-separated)
+- `--title <TITLE>` — Title for new page if created
+
+**LLM Configuration:**
+
+Wiki generation and updates require an LLM provider. Looks for (in order):
+1. `--exec` flag or `INDXR_LLM_COMMAND` env var (external command)
+2. `ANTHROPIC_API_KEY` env var (Anthropic/Claude)
+3. `OPENAI_API_KEY` env var (OpenAI/GPT)
+
+**Examples:**
+```bash
+# Generate wiki from scratch
+indxr wiki generate
+
+# Dry run — see planned pages without generating
+indxr wiki generate --dry-run
+
+# Update wiki after code changes
+indxr wiki update
+
+# Update wiki based on changes since a specific ref
+indxr wiki update --since main
+
+# Check wiki health
+indxr wiki status
+
+# Compound knowledge from a file
+indxr wiki compound notes.txt
+
+# Compound from stdin with source page references
+echo "Analysis of parser design..." | indxr wiki compound - --source-pages mod-parser,mod-mcp
+
+# Use external LLM command
+indxr wiki generate --exec "my-llm-wrapper"
+```
+
 ### `members`
 
 List detected workspace members (Cargo workspaces, npm workspaces, Go workspaces).
@@ -423,6 +497,31 @@ indxr --graph dot --filter-path src/mcp --graph-depth 2
 
 # Write to file
 indxr --graph dot -o deps.dot
+```
+
+### Wiki (requires `--features wiki`)
+
+```bash
+# Generate a codebase knowledge wiki
+indxr wiki generate
+
+# Preview planned pages without generating
+indxr wiki generate --dry-run
+
+# Update wiki after code changes
+indxr wiki update
+
+# Check wiki health
+indxr wiki status
+
+# Compound knowledge from a file
+indxr wiki compound notes.txt
+
+# Compound from stdin
+echo "The MCP module uses a dispatch pattern..." | indxr wiki compound -
+
+# MCP server with auto-updating wiki
+indxr serve --watch --wiki-auto-update
 ```
 
 ### Combining Options

@@ -356,6 +356,44 @@ Agents don't always use MCP tools voluntarily. Two mechanisms help:
 
 See the [Claude Code setup section](#claude-code) above for full details, examples, and a ready-to-copy CLAUDE.md template.
 
+## Codebase Knowledge Wiki
+
+> Requires `--features wiki`. See [Wiki docs](wiki.md) for full details.
+
+The structural index tells agents *what exists*. The wiki tells agents *why things exist* — design decisions, module responsibilities, failure patterns, and cross-cutting concerns.
+
+### Setting up the wiki
+
+```bash
+# Build with wiki support
+cargo install indxr --features wiki
+
+# Generate the wiki (requires LLM — set ANTHROPIC_API_KEY or OPENAI_API_KEY)
+indxr wiki generate
+
+# Or let an agent generate it via MCP (no API key needed — the agent IS the LLM)
+# Agent calls wiki_generate, plans pages, then wiki_contribute for each
+```
+
+### Agent workflow with wiki
+
+The wiki is designed to grow richer with every agent interaction:
+
+1. **Before diving into code:** Agent calls `wiki_search("authentication")` to understand modules and design decisions
+2. **After synthesizing insights:** Agent calls `wiki_compound` to persist knowledge that spans multiple pages
+3. **When a fix fails:** Agent calls `wiki_record_failure` so future agents avoid the same mistake
+4. **After code changes:** Agent calls `wiki_update` to identify stale pages, rewrites them, and saves via `wiki_contribute`
+
+### Auto-updating wiki
+
+The MCP server can keep the wiki up to date automatically:
+
+```bash
+indxr serve --watch --wiki-auto-update
+```
+
+This triggers wiki page updates when source files change, using the configured LLM provider.
+
 ## Effective Usage Patterns
 
 ### Pattern 1: Orientation First
@@ -466,7 +504,31 @@ indxr serve --member backend
 
 indxr auto-detects Cargo workspaces, npm/Yarn/pnpm workspaces, and Go workspaces. Use `--no-workspace` to disable detection and treat the root as a single project.
 
-### Pattern 9: Multi-Language Projects
+### Pattern 9: Wiki-Enhanced Exploration (MCP)
+
+With the wiki available, agents can understand the *why* before the *what*:
+
+```
+Agent: "I need to add a new parser for Ruby"
+→ calls wiki_search("parser module")
+→ gets: module overview, design decisions, existing parser patterns
+→ calls summarize("src/parser/mod.rs")
+→ gets: file structure, trait to implement
+→ calls read("src/parser/rust.rs", symbol="parse_rust")
+→ gets: reference implementation
+                                         Total: ~1000 tokens of deeply contextual knowledge
+```
+
+After completing the work, the agent compounds what it learned:
+
+```
+→ calls wiki_compound("Added Ruby parser following the same trait pattern as Rust/Python.
+   Ruby uses regex parsing, not tree-sitter. Key difference: Ruby uses `end` blocks
+   instead of braces, which affects the nesting detection regex.")
+→ knowledge persisted for future agents
+```
+
+### Pattern 10: Multi-Language Projects
 
 For polyglot codebases, scope by language:
 

@@ -18,6 +18,7 @@ AI coding agents waste thousands of tokens reading entire source files just to u
 
 - **27 languages** — tree-sitter AST parsing for 8 languages, regex extraction for 19 more
 - **26-tool MCP server** (3 compound default + 23 granular via `--all-tools`) — live codebase queries over JSON-RPC: symbol lookup, file summaries, caller tracing, signature search, complexity hotspots, type flow tracking, workspace support, and more
+- **Codebase knowledge wiki** — persistent, agent-driven wiki with architecture pages, module overviews, failure pattern recording, and automatic knowledge compounding (`--features wiki`, adds 9 MCP tools)
 - **Token-aware** — progressive truncation to fit context windows, ~5x reduction vs reading full files
 - **Git structural diffing** — declaration-level diffs (`+` added, `-` removed, `~` changed) against any git ref or GitHub PR
 - **Dependency graphs** — file and symbol dependency visualization as DOT, Mermaid, or JSON
@@ -36,11 +37,21 @@ AI coding agents waste thousands of tokens reading entire source files just to u
 cargo install indxr
 ```
 
+With optional features:
+
+```bash
+cargo install indxr --features wiki        # codebase knowledge wiki
+cargo install indxr --features http        # Streamable HTTP transport
+cargo install indxr --features wiki,http   # both
+```
+
 Or build from source:
 
 ```bash
 git clone https://github.com/bahdotsh/indxr.git
 cd indxr && cargo build --release
+# With wiki support:
+cd indxr && cargo build --release --features wiki
 ```
 
 ## Usage
@@ -54,6 +65,9 @@ indxr serve ./my-project --watch             # MCP server with auto-reindex
 indxr watch ./my-project                     # watch & keep INDEX.md updated
 indxr members                                # list workspace members (monorepo)
 indxr init                                   # set up all agent configs
+indxr wiki generate                          # generate codebase knowledge wiki
+indxr wiki update                            # update wiki after code changes
+indxr wiki status                            # check wiki health
 ```
 
 ## Agent Setup
@@ -120,6 +134,22 @@ JSON-RPC 2.0 over stdin/stdout (or Streamable HTTP with `--features http`). By d
 | `regenerate_index` | Re-index and update INDEX.md |
 
 > Granular tools are always callable even when not listed — `--all-tools` only controls whether they appear in `tools/list`.
+
+### Wiki tools (9 — requires `--features wiki`)
+
+| Tool | Description |
+|---|---|
+| `wiki_generate` | Initialize a new wiki and return structural context for page planning |
+| `wiki_search` | Search wiki by keyword or concept; returns matching pages with excerpts |
+| `wiki_read` | Read a wiki page by ID; returns full content with metadata |
+| `wiki_status` | Check wiki health: page count, staleness, source file coverage |
+| `wiki_contribute` | Write knowledge back to the wiki (create or update pages) |
+| `wiki_update` | Analyze code changes and return affected pages with diff context |
+| `wiki_suggest_contribution` | Suggest which page to update for a given synthesis (no LLM call) |
+| `wiki_compound` | Auto-route synthesized knowledge to the best matching page |
+| `wiki_record_failure` | Record a failed fix attempt for future agents to learn from |
+
+> `wiki_generate` is always listed; the remaining 8 tools appear once a wiki exists. Wiki tools support contradiction tracking and failure pattern recording.
 
 In workspace mode (multiple members), tools automatically gain a `member` param to scope queries. List tools support `compact` mode for ~30% token savings. See [MCP Server docs](docs/mcp-server.md) for full parameter details.
 
@@ -214,6 +244,38 @@ indxr --graph dot --graph-depth 2            # limit to 2 hops
 | `file` (default) | File-to-file import relationships |
 | `symbol` | Symbol-to-symbol relationships (trait impls, method calls) |
 
+## Codebase Knowledge Wiki
+
+> Requires `--features wiki`: `cargo install indxr --features wiki`
+
+The structural index tells agents *what exists*. The wiki tells agents *why things exist* — design decisions, module responsibilities, failure patterns, and cross-cutting concerns.
+
+```bash
+indxr wiki generate                          # generate wiki from scratch
+indxr wiki update                            # update after code changes
+indxr wiki status                            # check wiki health
+indxr wiki compound notes.txt                # compound knowledge from file
+echo "synthesis" | indxr wiki compound -     # compound from stdin
+```
+
+Wiki pages are stored in `.indxr/wiki/` as Markdown with YAML frontmatter. Page types: `architecture`, `module`, `entity`, `topic`. Pages support `[[page-id]]` cross-references, contradiction tracking, and failure pattern recording.
+
+The wiki is designed to be agent-driven via MCP tools:
+
+1. **Generate:** Agent calls `wiki_generate`, plans pages, calls `wiki_contribute` for each
+2. **Query:** Agent calls `wiki_search` to understand modules and design decisions before reading code
+3. **Learn:** Agent calls `wiki_compound` to persist synthesized insights after cross-page analysis
+4. **Record failures:** Agent calls `wiki_record_failure` so future agents avoid the same mistakes
+5. **Update:** Agent calls `wiki_update` to identify stale pages after code changes
+
+The MCP server can auto-update the wiki on file changes:
+
+```bash
+indxr serve --watch --wiki-auto-update
+```
+
+LLM configuration: set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or use `--exec` for a custom LLM backend.
+
 ## Token Budget
 
 ```bash
@@ -255,6 +317,7 @@ Parallel parsing via rayon. Incremental caching via mtime + xxh3.
 | [Git Diffing](docs/git-diffing.md) | Structural diff since any git ref or GitHub PR |
 | [Token Budget](docs/token-budget.md) | Truncation strategy and scoring |
 | [Caching](docs/caching.md) | Cache format and invalidation |
+| [Wiki](docs/wiki.md) | Codebase knowledge wiki generation and maintenance |
 | [MCP Server](docs/mcp-server.md) | MCP tools, protocol, and client setup |
 | [Agent Integration](docs/agent-integration.md) | Usage with Claude, Codex, Cursor, Copilot, etc. |
 
