@@ -32,6 +32,10 @@ indxr wiki generate
 
 This initializes the wiki structure and returns codebase context for an LLM to plan which pages to create. The LLM (or agent) then calls `wiki_contribute` for each page.
 
+If the initial LLM plan leaves indexed files uncovered, indxr performs a
+coverage-repair pass that groups remaining files and attaches them to existing
+or generated pages before page generation starts.
+
 Options:
 - `--model <MODEL>` — LLM model to use (auto-detected from provider by default)
 - `--wiki-dir <DIR>` — Wiki output directory (default: `.indxr/wiki`)
@@ -79,6 +83,38 @@ indxr wiki status
 ```
 
 Shows page count, staleness (commits behind HEAD), and source file coverage.
+
+### List included workspace members before generation
+
+```bash
+indxr wiki members
+```
+
+Shows which workspace members would be included in wiki generation, along with
+their indexed file and line counts. This is useful as a quick preflight check
+before running `indxr wiki generate` on large monorepos.
+
+### Preflight wiki generation
+
+```bash
+indxr wiki preflight
+```
+
+Prints a generation preflight report with:
+
+- included members
+- suspicious generated/vendor directories that should probably be excluded
+- top file groups by file count and line count
+- the largest included files
+- the included file list (truncated for very large repos)
+
+Use this before `indxr wiki generate` when a repo is large or when prompt size,
+coverage gaps, or accidental inclusion of generated assets are a concern.
+
+```bash
+# Preflight with explicit exclusions
+indxr wiki -e '**/node_modules/**' -e '**/dist/**' preflight
+```
 
 ### Compound knowledge into the wiki
 

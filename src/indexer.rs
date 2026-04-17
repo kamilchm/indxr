@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 
@@ -179,15 +179,18 @@ pub fn build_workspace_index(ws_config: &WorkspaceConfig) -> anyhow::Result<Work
         .members
         .par_iter()
         .map(|member| {
+            let mut exclude = ws_config.template.exclude.clone();
+            exclude.extend(member_specific_excludes(member, workspace));
             let member_config = IndexConfig {
                 root: member.path.clone(),
                 cache_dir: ws_config.template.cache_dir.join(&member.name),
                 max_file_size: ws_config.template.max_file_size,
                 max_depth: ws_config.template.max_depth,
-                exclude: ws_config.template.exclude.clone(),
+                exclude,
                 no_gitignore: ws_config.template.no_gitignore,
             };
-            let index = build_index(&member_config)?;
+            let mut index = build_index(&member_config)?;
+            normalize_member_index_paths(&mut index, &member.relative_path);
             Ok(MemberIndex {
                 name: member.name.clone(),
                 relative_path: member.relative_path.clone(),
@@ -255,6 +258,41 @@ pub fn detect_and_build_workspace(
 
     let ws_index = build_workspace_index(&ws_config)?;
     Ok((ws_index, ws_config))
+}
+
+fn member_specific_excludes(
+    member: &workspace::WorkspaceMember,
+    workspace: &Workspace,
+) -> Vec<String> {
+    let mut excludes = Vec::new();
+
+    for other in &workspace.members {
+        if other.path == member.path {
+            continue;
+        }
+
+        if let Ok(relative) = other.path.strip_prefix(&member.path) {
+            if relative.as_os_str().is_empty() {
+                continue;
+            }
+
+            excludes.push(format!("{}/**", relative.to_string_lossy()));
+        }
+    }
+
+    excludes.sort();
+    excludes.dedup();
+    excludes
+}
+
+fn normalize_member_index_paths(index: &mut CodebaseIndex, member_relative_path: &Path) {
+    if member_relative_path.as_os_str().is_empty() || member_relative_path == Path::new(".") {
+        return;
+    }
+
+    for file in &mut index.files {
+        file.path = member_relative_path.join(&file.path);
+    }
 }
 
 /// Rebuild a workspace index and write INDEX.md to the workspace root.
@@ -342,5 +380,80 @@ fn aggregate_stats(members: &[MemberIndex], duration: std::time::Duration) -> In
         total_lines,
         languages,
         duration_ms: duration.as_millis() as u64,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_build_workspace_index_scopes_root_member_and_normalizes_paths() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+
+        fs::write(
+            root.join("Cargo.toml"),
+            r#"[package]
+name = "rootpkg"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = [".", "apps/api"]
+"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+
+        fs::create_dir_all(root.join("apps/api/src")).unwrap();
+        fs::write(
+            root.join("apps/api/Cargo.toml"),
+            r#"[package]
+name = "api"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        fs::write(root.join("apps/api/src/lib.rs"), "pub fn run() {}\n").unwrap();
+
+        let workspace = workspace::detect_workspace(root).unwrap();
+        let ws_config = WorkspaceConfig {
+            workspace,
+            template: IndexConfig {
+                root: root.to_path_buf(),
+                cache_dir: root.join(".indxr-cache-test"),
+                max_file_size: 512,
+                max_depth: None,
+                exclude: Vec::new(),
+                no_gitignore: true,
+            },
+        };
+
+        let ws_index = build_workspace_index(&ws_config).unwrap();
+        let root_member = ws_index.find_member("rootpkg").unwrap();
+        let api_member = ws_index.find_member("api").unwrap();
+
+        let root_paths: Vec<String> = root_member
+            .index
+            .files
+            .iter()
+            .map(|f| f.path.to_string_lossy().to_string())
+            .collect();
+        assert!(root_paths.contains(&"Cargo.toml".to_string()));
+        assert!(root_paths.contains(&"src/main.rs".to_string()));
+        assert!(!root_paths.contains(&"apps/api/src/lib.rs".to_string()));
+
+        let api_paths: Vec<String> = api_member
+            .index
+            .files
+            .iter()
+            .map(|f| f.path.to_string_lossy().to_string())
+            .collect();
+        assert!(api_paths.contains(&"apps/api/Cargo.toml".to_string()));
+        assert!(api_paths.contains(&"apps/api/src/lib.rs".to_string()));
     }
 }

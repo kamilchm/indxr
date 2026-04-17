@@ -56,6 +56,7 @@ cd indxr && cargo build --release --features wiki
 
 ```bash
 # Wiki — the core workflow
+indxr wiki preflight                         # inspect included files, groups, bottlenecks
 indxr wiki generate                          # generate codebase knowledge wiki
 indxr wiki update                            # update wiki after code changes
 indxr wiki status                            # check wiki health
@@ -81,6 +82,7 @@ indxr members                                # list workspace members (monorepo)
 The structural index tells agents what exists in your codebase. The wiki tells them why. Architecture decisions, module responsibilities, failure patterns — things that usually get lost when someone leaves the team.
 
 ```bash
+indxr wiki preflight                         # inspect included files before generation
 indxr wiki generate                          # generate wiki from scratch
 indxr wiki update                            # update after code changes
 indxr wiki status                            # check wiki health

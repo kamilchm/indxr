@@ -197,6 +197,97 @@ fn test_wiki_status_no_wiki() {
 }
 
 #[test]
+fn test_wiki_members_lists_included_members() {
+    let tmp = TempDir::new().unwrap();
+    let project_dir = tmp.path().join("project");
+    fs::create_dir_all(&project_dir).unwrap();
+
+    create_test_project(&project_dir);
+
+    let output = Command::new(indxr_bin())
+        .args(["wiki", "members"])
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "wiki members failed: {stderr}");
+    assert!(stderr.contains("Included members: 1"));
+    assert!(stderr.contains("project (.)"));
+    assert!(stderr.contains("1 files, 3 lines"));
+}
+
+#[test]
+fn test_wiki_members_warns_about_node_modules() {
+    let tmp = TempDir::new().unwrap();
+    let project_dir = tmp.path().join("project");
+    fs::create_dir_all(&project_dir).unwrap();
+
+    create_test_project(&project_dir);
+    let pkg_dir = project_dir.join("apps/web/node_modules/react");
+    fs::create_dir_all(&pkg_dir).unwrap();
+    fs::write(pkg_dir.join("package.json"), "{\"name\":\"react\"}\n").unwrap();
+
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "add node_modules fixture"])
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    let output = Command::new(indxr_bin())
+        .args(["wiki", "members"])
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "wiki members failed: {stderr}");
+    assert!(stderr.contains("generated/vendor directories"));
+    assert!(stderr.contains("node_modules"));
+}
+
+#[test]
+fn test_wiki_preflight_lists_groups_and_files() {
+    let tmp = TempDir::new().unwrap();
+    let project_dir = tmp.path().join("project");
+    fs::create_dir_all(&project_dir).unwrap();
+
+    create_test_project(&project_dir);
+    fs::create_dir_all(project_dir.join("docs")).unwrap();
+    fs::write(project_dir.join("docs/guide.md"), "# Guide\n").unwrap();
+
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "add docs fixture"])
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    let output = Command::new(indxr_bin())
+        .args(["wiki", "preflight"])
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "wiki preflight failed: {stderr}");
+    assert!(stderr.contains("Wiki preflight:"));
+    assert!(stderr.contains("Top groups by included files:"));
+    assert!(stderr.contains("Largest included files:"));
+    assert!(stderr.contains("Included files:"));
+    assert!(stderr.contains("docs/guide.md"));
+}
+
+#[test]
 fn test_wiki_status_after_generate() {
     let tmp = TempDir::new().unwrap();
     let project_dir = tmp.path().join("project");

@@ -37,6 +37,28 @@ pub(crate) struct WikiHealthReport {
     pub uncovered_files: Vec<String>,
 }
 
+struct IncludedDirWarning {
+    dir_name: &'static str,
+    file_count: usize,
+    examples: Vec<String>,
+}
+
+struct PreflightFileEntry {
+    path: String,
+    member_name: String,
+    lines: usize,
+    size: u64,
+    declarations: usize,
+    language: String,
+}
+
+struct PreflightGroupSummary {
+    key: String,
+    file_count: usize,
+    total_lines: usize,
+    total_size: u64,
+}
+
 pub(crate) fn compute_wiki_health(
     store: &store::WikiStore,
     workspace: &WorkspaceIndex,
@@ -93,7 +115,7 @@ pub(crate) fn compute_wiki_health(
         .flat_map(|p| p.frontmatter.source_files.iter().map(|s| s.as_str()))
         .collect();
 
-    let all_files: Vec<String> = workspace
+    let all_files: HashSet<String> = workspace
         .members
         .iter()
         .flat_map(|m| {
@@ -104,11 +126,12 @@ pub(crate) fn compute_wiki_health(
         })
         .collect();
     let total_files = all_files.len();
-    let uncovered_files: Vec<String> = all_files
+    let mut uncovered_files: Vec<String> = all_files
         .iter()
         .filter(|f| !covered.contains(f.as_str()))
         .cloned()
         .collect();
+    uncovered_files.sort();
     let covered_files = total_files - uncovered_files.len();
 
     let coverage_pct = if total_files > 0 {
@@ -132,6 +155,252 @@ pub(crate) fn compute_wiki_health(
         coverage_pct,
         affected_pages,
         uncovered_files,
+    }
+}
+
+fn detect_suspicious_included_dirs(workspace: &WorkspaceIndex) -> Vec<IncludedDirWarning> {
+    const SUSPICIOUS_DIRS: [&str; 8] = [
+        "node_modules",
+        "vendor",
+        "dist",
+        "build",
+        "coverage",
+        ".next",
+        ".turbo",
+        ".yarn",
+    ];
+
+    let mut counts: HashMap<&'static str, usize> = HashMap::new();
+    let mut examples: HashMap<&'static str, Vec<String>> = HashMap::new();
+
+    for file in workspace
+        .members
+        .iter()
+        .flat_map(|member| member.index.files.iter())
+    {
+        let path_str = file.path.to_string_lossy().to_string();
+        let matched = SUSPICIOUS_DIRS.iter().find(|dir| {
+            std::path::Path::new(&path_str)
+                .components()
+                .any(|component| component.as_os_str() == std::ffi::OsStr::new(dir))
+        });
+
+        if let Some(dir) = matched {
+            *counts.entry(*dir).or_insert(0) += 1;
+            let bucket = examples.entry(*dir).or_default();
+            if bucket.len() < 3 {
+                bucket.push(path_str);
+            }
+        }
+    }
+
+    let mut warnings: Vec<IncludedDirWarning> = counts
+        .into_iter()
+        .map(|(dir_name, file_count)| IncludedDirWarning {
+            dir_name,
+            file_count,
+            examples: examples.remove(dir_name).unwrap_or_default(),
+        })
+        .collect();
+
+    warnings.sort_by(|a, b| {
+        b.file_count
+            .cmp(&a.file_count)
+            .then(a.dir_name.cmp(b.dir_name))
+    });
+    warnings
+}
+
+fn warn_suspicious_included_dirs(workspace: &WorkspaceIndex) {
+    let warnings = detect_suspicious_included_dirs(workspace);
+    if warnings.is_empty() {
+        return;
+    }
+
+    eprintln!("Warning: common generated/vendor directories are included in wiki indexing:");
+    for warning in warnings {
+        let example_suffix = if warning.examples.is_empty() {
+            String::new()
+        } else {
+            format!(" (e.g. {})", warning.examples.join(", "))
+        };
+        eprintln!(
+            "  - {}: {} files{}",
+            warning.dir_name, warning.file_count, example_suffix
+        );
+        eprintln!(
+            "    Consider adding it to .gitignore or excluding it with: -e '**/{}/**'",
+            warning.dir_name
+        );
+    }
+}
+
+fn collect_preflight_files(workspace: &WorkspaceIndex) -> Vec<PreflightFileEntry> {
+    let mut files = Vec::new();
+    let mut seen = HashSet::new();
+
+    for member in &workspace.members {
+        for file in &member.index.files {
+            let path = file.path.to_string_lossy().to_string();
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+
+            files.push(PreflightFileEntry {
+                path,
+                member_name: member.name.clone(),
+                lines: file.lines,
+                size: file.size,
+                declarations: file.declarations.len(),
+                language: file.language.name().to_string(),
+            });
+        }
+    }
+
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    files
+}
+
+fn preflight_group_key(workspace: &WorkspaceIndex, path: &str) -> String {
+    if let Some(member) = workspace
+        .members
+        .iter()
+        .filter(|member| {
+            let rel = member.relative_path.to_string_lossy();
+            rel != "." && (path == rel || path.starts_with(&format!("{rel}/")))
+        })
+        .max_by_key(|member| member.relative_path.components().count())
+    {
+        return member.relative_path.to_string_lossy().to_string();
+    }
+
+    let parts: Vec<String> = std::path::Path::new(path)
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .collect();
+
+    match parts.as_slice() {
+        [first, second, ..]
+            if matches!(
+                first.as_str(),
+                "docs"
+                    | "migrations"
+                    | "review-ui"
+                    | "extensions"
+                    | "config"
+                    | "scripts"
+                    | "src"
+                    | "tests"
+            ) =>
+        {
+            format!("{first}/{second}")
+        }
+        [first, ..] => first.clone(),
+        [] => "misc".to_string(),
+    }
+}
+
+fn summarize_preflight_groups(
+    workspace: &WorkspaceIndex,
+    files: &[PreflightFileEntry],
+) -> Vec<PreflightGroupSummary> {
+    let mut groups: HashMap<String, PreflightGroupSummary> = HashMap::new();
+
+    for file in files {
+        let key = preflight_group_key(workspace, &file.path);
+        let entry = groups.entry(key.clone()).or_insert(PreflightGroupSummary {
+            key,
+            file_count: 0,
+            total_lines: 0,
+            total_size: 0,
+        });
+        entry.file_count += 1;
+        entry.total_lines += file.lines;
+        entry.total_size += file.size;
+    }
+
+    let mut groups: Vec<PreflightGroupSummary> = groups.into_values().collect();
+    groups.sort_by(|a, b| {
+        b.file_count
+            .cmp(&a.file_count)
+            .then(b.total_lines.cmp(&a.total_lines))
+            .then(a.key.cmp(&b.key))
+    });
+    groups
+}
+
+fn print_wiki_preflight(workspace: &WorkspaceIndex) {
+    const TOP_GROUPS: usize = 12;
+    const TOP_FILES: usize = 20;
+    const FILE_LIST_LIMIT: usize = 200;
+
+    let files = collect_preflight_files(workspace);
+    let total_lines: usize = files.iter().map(|file| file.lines).sum();
+
+    eprintln!(
+        "Wiki preflight: {} ({})",
+        workspace.root.display(),
+        workspace.workspace_kind.as_str()
+    );
+    eprintln!(
+        "Included members: {} | Included files: {} | Total lines: {}",
+        workspace.members.len(),
+        files.len(),
+        total_lines,
+    );
+
+    eprintln!("\nMembers:");
+    for member in &workspace.members {
+        eprintln!(
+            "  - {} ({}) — {} files, {} lines",
+            member.name,
+            member.relative_path.display(),
+            member.index.stats.total_files,
+            member.index.stats.total_lines,
+        );
+    }
+
+    warn_suspicious_included_dirs(workspace);
+
+    let groups = summarize_preflight_groups(workspace, &files);
+    eprintln!("\nTop groups by included files:");
+    for group in groups.iter().take(TOP_GROUPS) {
+        eprintln!(
+            "  - {} — {} files, {} lines, {} bytes",
+            group.key, group.file_count, group.total_lines, group.total_size,
+        );
+    }
+
+    let mut largest_files: Vec<&PreflightFileEntry> = files.iter().collect();
+    largest_files.sort_by(|a, b| {
+        b.lines
+            .cmp(&a.lines)
+            .then(b.declarations.cmp(&a.declarations))
+            .then(b.size.cmp(&a.size))
+            .then(a.path.cmp(&b.path))
+    });
+
+    eprintln!("\nLargest included files:");
+    for file in largest_files.iter().take(TOP_FILES) {
+        eprintln!(
+            "  - {} — {} lines, {} decls, {} bytes [{} / {}]",
+            file.path, file.lines, file.declarations, file.size, file.language, file.member_name,
+        );
+    }
+
+    eprintln!("\nIncluded files:");
+    for file in files.iter().take(FILE_LIST_LIMIT) {
+        eprintln!(
+            "  - {} — {} lines, {} decls [{} / {}]",
+            file.path, file.lines, file.declarations, file.language, file.member_name,
+        );
+    }
+    if files.len() > FILE_LIST_LIMIT {
+        eprintln!(
+            "  ... truncated {} additional files (showing first {})",
+            files.len() - FILE_LIST_LIMIT,
+            FILE_LIST_LIMIT,
+        );
     }
 }
 
@@ -356,6 +625,7 @@ pub async fn run_wiki_command(
             dry_run,
         } => {
             let wiki_dir = resolve_wiki_dir(wiki_dir_override, &workspace.root);
+            warn_suspicious_included_dirs(&workspace);
             let llm = build_llm_client(exec_cmd, model_override, *max_response_tokens)?;
 
             eprintln!("Using model: {}", llm.model());
@@ -415,6 +685,37 @@ pub async fn run_wiki_command(
                 wiki_dir.display()
             );
 
+            Ok(())
+        }
+        WikiAction::Members => {
+            eprintln!(
+                "Wiki workspace: {} ({})",
+                workspace.root.display(),
+                workspace.workspace_kind.as_str()
+            );
+            eprintln!(
+                "Included members: {} ({} files, {} lines)",
+                workspace.members.len(),
+                workspace.stats.total_files,
+                workspace.stats.total_lines,
+            );
+
+            for member in &workspace.members {
+                eprintln!(
+                    "  - {} ({}) — {} files, {} lines",
+                    member.name,
+                    member.relative_path.display(),
+                    member.index.stats.total_files,
+                    member.index.stats.total_lines,
+                );
+            }
+
+            warn_suspicious_included_dirs(&workspace);
+
+            Ok(())
+        }
+        WikiAction::Preflight => {
+            print_wiki_preflight(&workspace);
             Ok(())
         }
         WikiAction::Status => {
@@ -533,4 +834,168 @@ pub(crate) fn commits_behind(root: &std::path::Path, since_ref: &str) -> Result<
     }
     let count_str = String::from_utf8_lossy(&output.stdout);
     Ok(count_str.trim().parse::<usize>().unwrap_or(0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    use crate::languages::Language;
+    use crate::model::{CodebaseIndex, FileIndex, IndexStats, MemberIndex, WorkspaceIndex};
+    use crate::workspace::WorkspaceKind;
+
+    #[test]
+    fn test_detect_suspicious_included_dirs_reports_node_modules() {
+        let files = vec![
+            FileIndex {
+                path: PathBuf::from("apps/web/node_modules/react/package.json"),
+                language: Language::Json,
+                size: 10,
+                lines: 1,
+                imports: Vec::new(),
+                declarations: Vec::new(),
+            },
+            FileIndex {
+                path: PathBuf::from("apps/web/node_modules/react/README.md"),
+                language: Language::Markdown,
+                size: 10,
+                lines: 1,
+                imports: Vec::new(),
+                declarations: Vec::new(),
+            },
+            FileIndex {
+                path: PathBuf::from("src/main.rs"),
+                language: Language::Rust,
+                size: 10,
+                lines: 1,
+                imports: Vec::new(),
+                declarations: Vec::new(),
+            },
+        ];
+
+        let workspace = WorkspaceIndex {
+            root: PathBuf::from("/tmp/project"),
+            root_name: "project".to_string(),
+            workspace_kind: WorkspaceKind::None,
+            generated_at: "now".to_string(),
+            stats: IndexStats {
+                total_files: files.len(),
+                total_lines: files.iter().map(|f| f.lines).sum(),
+                languages: HashMap::new(),
+                duration_ms: 0,
+            },
+            members: vec![MemberIndex {
+                name: "project".to_string(),
+                relative_path: PathBuf::from("."),
+                index: CodebaseIndex {
+                    root: PathBuf::from("/tmp/project"),
+                    root_name: "project".to_string(),
+                    generated_at: "now".to_string(),
+                    files,
+                    tree: Vec::new(),
+                    stats: IndexStats {
+                        total_files: 3,
+                        total_lines: 3,
+                        languages: HashMap::new(),
+                        duration_ms: 0,
+                    },
+                },
+            }],
+        };
+
+        let warnings = detect_suspicious_included_dirs(&workspace);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].dir_name, "node_modules");
+        assert_eq!(warnings[0].file_count, 2);
+    }
+
+    #[test]
+    fn test_compute_wiki_health_dedupes_overlapping_workspace_files() {
+        use crate::wiki::page::{Frontmatter, PageType, WikiPage};
+        use crate::wiki::store::{WikiManifest, WikiStore};
+
+        let shared = FileIndex {
+            path: PathBuf::from("apps/api/src/lib.rs"),
+            language: Language::Rust,
+            size: 10,
+            lines: 1,
+            imports: Vec::new(),
+            declarations: Vec::new(),
+        };
+
+        let workspace = WorkspaceIndex {
+            root: PathBuf::from("/tmp/project"),
+            root_name: "project".to_string(),
+            workspace_kind: WorkspaceKind::Cargo,
+            generated_at: "now".to_string(),
+            stats: IndexStats {
+                total_files: 2,
+                total_lines: 2,
+                languages: HashMap::new(),
+                duration_ms: 0,
+            },
+            members: vec![
+                MemberIndex {
+                    name: "root".to_string(),
+                    relative_path: PathBuf::from("."),
+                    index: CodebaseIndex {
+                        root: PathBuf::from("/tmp/project"),
+                        root_name: "project".to_string(),
+                        generated_at: "now".to_string(),
+                        files: vec![shared.clone()],
+                        tree: Vec::new(),
+                        stats: IndexStats {
+                            total_files: 1,
+                            total_lines: 1,
+                            languages: HashMap::new(),
+                            duration_ms: 0,
+                        },
+                    },
+                },
+                MemberIndex {
+                    name: "api".to_string(),
+                    relative_path: PathBuf::from("apps/api"),
+                    index: CodebaseIndex {
+                        root: PathBuf::from("/tmp/project/apps/api"),
+                        root_name: "api".to_string(),
+                        generated_at: "now".to_string(),
+                        files: vec![shared],
+                        tree: Vec::new(),
+                        stats: IndexStats {
+                            total_files: 1,
+                            total_lines: 1,
+                            languages: HashMap::new(),
+                            duration_ms: 0,
+                        },
+                    },
+                },
+            ],
+        };
+
+        let store = WikiStore {
+            root: PathBuf::from("/tmp/wiki"),
+            manifest: WikiManifest::default(),
+            pages: vec![WikiPage {
+                frontmatter: Frontmatter {
+                    id: "mod-api".to_string(),
+                    title: "API".to_string(),
+                    page_type: PageType::Module,
+                    source_files: vec!["apps/api/src/lib.rs".to_string()],
+                    generated_at_ref: String::new(),
+                    generated_at: String::new(),
+                    links_to: Vec::new(),
+                    covers: Vec::new(),
+                    contradictions: Vec::new(),
+                    failures: Vec::new(),
+                },
+                content: String::new(),
+            }],
+        };
+
+        let health = compute_wiki_health(&store, &workspace);
+        assert_eq!(health.total_files, 1);
+        assert_eq!(health.covered_files, 1);
+        assert!(health.uncovered_files.is_empty());
+    }
 }

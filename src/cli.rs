@@ -355,6 +355,12 @@ pub enum WikiAction {
     /// Show wiki status (page count, staleness, coverage)
     Status,
 
+    /// List workspace members that would be included in wiki generation
+    Members,
+
+    /// Preflight wiki generation: included files, groups, and bottlenecks
+    Preflight,
+
     /// Compound synthesized knowledge into the wiki
     Compound {
         /// Read synthesis text from file or stdin ("-")
@@ -459,6 +465,32 @@ mod tests {
                 assert_eq!(since.as_deref(), Some("v1.0"));
             }
             other => panic!("Expected Diff command, got: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "wiki")]
+    #[test]
+    fn test_wiki_members_subcommand() {
+        let cli = Cli::parse_from(["indxr", "wiki", "members"]);
+        match cli.command {
+            Some(Command::Wiki {
+                action: WikiAction::Members,
+                ..
+            }) => {}
+            other => panic!("Expected wiki members command, got: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "wiki")]
+    #[test]
+    fn test_wiki_preflight_subcommand() {
+        let cli = Cli::parse_from(["indxr", "wiki", "preflight"]);
+        match cli.command {
+            Some(Command::Wiki {
+                action: WikiAction::Preflight,
+                ..
+            }) => {}
+            other => panic!("Expected wiki preflight command, got: {other:?}"),
         }
     }
 }

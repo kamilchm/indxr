@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
+use globset::GlobBuilder;
 use serde::Deserialize;
 
 use crate::diff;
@@ -52,15 +53,19 @@ pub struct WikiGenerator<'a> {
     workspace: &'a WorkspaceIndex,
     /// Pre-built path→FileIndex lookup for O(1) access.
     file_index: HashMap<String, Vec<(&'a FileIndex, String)>>,
+    /// All indexed file paths relative to the workspace root.
+    workspace_paths: Vec<String>,
 }
 
 impl<'a> WikiGenerator<'a> {
     pub fn new(llm: &'a LlmClient, workspace: &'a WorkspaceIndex) -> Self {
         let file_index = Self::build_file_index(workspace);
+        let workspace_paths = Self::collect_workspace_paths(workspace);
         Self {
             llm,
             workspace,
             file_index,
+            workspace_paths,
         }
     }
 
@@ -87,6 +92,23 @@ impl<'a> WikiGenerator<'a> {
             }
         }
         map
+    }
+
+    fn collect_workspace_paths(workspace: &'a WorkspaceIndex) -> Vec<String> {
+        let mut paths: Vec<String> = workspace
+            .members
+            .iter()
+            .flat_map(|member| {
+                member
+                    .index
+                    .files
+                    .iter()
+                    .map(|file| file.path.to_string_lossy().to_string())
+            })
+            .collect();
+        paths.sort();
+        paths.dedup();
+        paths
     }
 
     /// Full wiki generation from scratch.
@@ -472,37 +494,32 @@ impl<'a> WikiGenerator<'a> {
         ctx.push_str("# Current Source File Details\n\n");
         for source_path in &existing.frontmatter.source_files {
             if let Some(file) = self.find_file(source_path) {
-                ctx.push_str(&format!("## {}\n", source_path));
-                ctx.push_str(&format!(
+                let mut section = String::new();
+                section.push_str(&format!("## {}\n", source_path));
+                section.push_str(&format!(
                     "Language: {}, Lines: {}, Size: {} bytes\n\n",
                     file.language.name(),
                     file.lines,
                     file.size,
                 ));
 
-                // Skip detailed listings once we exceed the budget
-                if ctx.len() >= limit {
-                    if !truncated {
-                        truncated = true;
-                        eprintln!(
-                            "Warning: update context exceeds {}k chars, \
-                             omitting details for remaining source files",
-                            limit / 1000
-                        );
-                    }
-                    continue;
-                }
-
                 if !file.imports.is_empty() {
-                    ctx.push_str("**Imports:**\n");
+                    section.push_str("**Imports:**\n");
                     for imp in &file.imports {
-                        ctx.push_str(&format!("- `{}`\n", imp.text));
+                        section.push_str(&format!("- `{}`\n", imp.text));
                     }
-                    ctx.push('\n');
+                    section.push('\n');
                 }
-                ctx.push_str("**Declarations:**\n");
-                format_declarations(&file.declarations, &mut ctx, 0);
-                ctx.push('\n');
+                section.push_str("**Declarations:**\n");
+                format_declarations(&file.declarations, &mut section, 0);
+                section.push('\n');
+
+                if !try_push(&mut ctx, &section, limit) {
+                    if !truncated {
+                        warn_context_truncated("update", limit);
+                    }
+                    break;
+                }
             }
         }
 
@@ -580,6 +597,7 @@ impl<'a> WikiGenerator<'a> {
             .into_iter()
             .map(|mut p| {
                 p.id = page::sanitize_id(&p.id);
+                p.source_files = self.resolve_source_files(&p.source_files);
                 p
             })
             // Drop plans with empty IDs after sanitization
@@ -594,7 +612,7 @@ impl<'a> WikiGenerator<'a> {
             );
         }
 
-        Ok(plans)
+        Ok(self.augment_plan_coverage(plans))
     }
 
     /// Plan what to do with source files not covered by any existing wiki page.
@@ -783,6 +801,7 @@ impl<'a> WikiGenerator<'a> {
     fn build_page_context(&self, plan: &PagePlan, all_pages_str: &str) -> String {
         let mut ctx = String::new();
         let mut truncated = false;
+        let limit = Self::PAGE_CONTEXT_CHAR_LIMIT;
 
         ctx.push_str("# Page Plan\n");
         ctx.push_str(&format!("- ID: {}\n", plan.id));
@@ -791,47 +810,55 @@ impl<'a> WikiGenerator<'a> {
 
         // All other wiki pages (for cross-referencing)
         ctx.push_str("# Other Wiki Pages\n");
-        ctx.push_str(all_pages_str);
-        ctx.push_str("\n\n");
+        if ctx.len() + all_pages_str.len() + 2 > limit {
+            let remaining = limit.saturating_sub(ctx.len()).saturating_sub(500);
+            if remaining > 0 {
+                let safe = floor_char_boundary(all_pages_str, remaining);
+                let trunc_point = all_pages_str[..safe].rfind('\n').unwrap_or(safe);
+                ctx.push_str(&all_pages_str[..trunc_point]);
+                ctx.push_str("\n... (page list truncated)\n\n");
+            }
+            if !truncated {
+                truncated = true;
+                warn_context_truncated("page", limit);
+            }
+        } else {
+            ctx.push_str(all_pages_str);
+            ctx.push_str("\n\n");
+        }
 
         // Structural data for source files
         ctx.push_str("# Source File Details\n\n");
         for source_path in &plan.source_files {
             if let Some(file) = self.find_file(source_path) {
-                ctx.push_str(&format!("## {}\n", source_path));
-                ctx.push_str(&format!(
+                let mut section = String::new();
+                section.push_str(&format!("## {}\n", source_path));
+                section.push_str(&format!(
                     "Language: {}, Lines: {}, Size: {} bytes\n\n",
                     file.language.name(),
                     file.lines,
                     file.size,
                 ));
 
-                // Skip detailed listings once we exceed the budget
-                if ctx.len() >= Self::PAGE_CONTEXT_CHAR_LIMIT {
-                    if !truncated {
-                        truncated = true;
-                        eprintln!(
-                            "Warning: page context exceeds {}k chars, \
-                             omitting details for remaining source files",
-                            Self::PAGE_CONTEXT_CHAR_LIMIT / 1000
-                        );
-                    }
-                    continue;
-                }
-
-                // Imports
                 if !file.imports.is_empty() {
-                    ctx.push_str("**Imports:**\n");
+                    section.push_str("**Imports:**\n");
                     for imp in &file.imports {
-                        ctx.push_str(&format!("- `{}`\n", imp.text));
+                        section.push_str(&format!("- `{}`\n", imp.text));
                     }
-                    ctx.push('\n');
+                    section.push('\n');
                 }
 
                 // Declarations with full signatures
-                ctx.push_str("**Declarations:**\n");
-                format_declarations(&file.declarations, &mut ctx, 0);
-                ctx.push('\n');
+                section.push_str("**Declarations:**\n");
+                format_declarations(&file.declarations, &mut section, 0);
+                section.push('\n');
+
+                if !try_push(&mut ctx, &section, limit) {
+                    if !truncated {
+                        warn_context_truncated("page", limit);
+                    }
+                    break;
+                }
             }
         }
 
@@ -883,6 +910,281 @@ impl<'a> WikiGenerator<'a> {
 
         None
     }
+
+    fn augment_plan_coverage(&self, mut plans: Vec<PagePlan>) -> Vec<PagePlan> {
+        let mut covered: HashSet<String> = plans
+            .iter()
+            .flat_map(|plan| plan.source_files.iter().cloned())
+            .collect();
+        let uncovered: Vec<String> = self
+            .workspace_paths
+            .iter()
+            .filter(|path| !covered.contains(path.as_str()))
+            .cloned()
+            .collect();
+
+        if uncovered.is_empty() {
+            return plans;
+        }
+
+        eprintln!(
+            "Warning: wiki plan left {} files uncovered; repairing coverage automatically",
+            uncovered.len()
+        );
+
+        let mut grouped: HashMap<String, Vec<String>> = HashMap::new();
+        for path in uncovered {
+            grouped
+                .entry(self.coverage_group_key(&path))
+                .or_default()
+                .push(path);
+        }
+
+        let architecture_idx = plans
+            .iter()
+            .position(|plan| plan.page_type == PageType::Architecture);
+        let mut used_ids: HashSet<String> = plans.iter().map(|plan| plan.id.clone()).collect();
+
+        let mut groups: Vec<(String, Vec<String>)> = grouped.into_iter().collect();
+        groups.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then(a.0.cmp(&b.0)));
+
+        for (group_key, mut files) in groups {
+            files.sort();
+
+            if let Some(existing_idx) = self.find_best_plan_for_group(&plans, &group_key) {
+                for file in files {
+                    if covered.insert(file.clone()) {
+                        plans[existing_idx].source_files.push(file);
+                    }
+                }
+                plans[existing_idx].source_files.sort();
+                plans[existing_idx].source_files.dedup();
+                continue;
+            }
+
+            let group_lines: usize = files
+                .iter()
+                .filter_map(|path| self.find_file(path))
+                .map(|file| file.lines)
+                .sum();
+
+            if files.len() >= 3 || group_lines >= 500 {
+                let page_id = self.unique_generated_page_id(&group_key, &mut used_ids);
+                plans.push(PagePlan {
+                    id: page_id,
+                    page_type: PageType::Module,
+                    title: format!("{} Module", self.humanize_group_key(&group_key)),
+                    source_files: files.clone(),
+                });
+                covered.extend(files);
+                continue;
+            }
+
+            if let Some(idx) = architecture_idx {
+                for file in files {
+                    if covered.insert(file.clone()) {
+                        plans[idx].source_files.push(file);
+                    }
+                }
+                plans[idx].source_files.sort();
+                plans[idx].source_files.dedup();
+            }
+        }
+
+        let before = plans.len();
+        plans.retain(|plan| plan.page_type == PageType::Index || !plan.source_files.is_empty());
+        if plans.len() != before {
+            eprintln!(
+                "Warning: dropped {} empty wiki plan pages after coverage repair",
+                before - plans.len()
+            );
+        }
+
+        plans
+    }
+
+    fn find_best_plan_for_group(&self, plans: &[PagePlan], group_key: &str) -> Option<usize> {
+        plans
+            .iter()
+            .enumerate()
+            .filter(|(_, plan)| plan.page_type != PageType::Index)
+            .map(|(idx, plan)| {
+                let score = plan
+                    .source_files
+                    .iter()
+                    .filter(|path| self.coverage_group_key(path) == group_key)
+                    .count();
+                (idx, score)
+            })
+            .filter(|(_, score)| *score > 0)
+            .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
+            .map(|(idx, _)| idx)
+    }
+
+    fn coverage_group_key(&self, path: &str) -> String {
+        if let Some(member) = self.owning_member(path) {
+            if member.relative_path != Path::new(".") {
+                return member.relative_path.to_string_lossy().to_string();
+            }
+        }
+
+        let parts: Vec<String> = Path::new(path)
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy().to_string())
+            .collect();
+
+        match parts.as_slice() {
+            [first, second, ..] if first == "extensions" => format!("{first}/{second}"),
+            [first, second, ..] if first == "review-ui" => format!("{first}/{second}"),
+            [first, ..] => first.clone(),
+            [] => "misc".to_string(),
+        }
+    }
+
+    fn owning_member(&self, path: &str) -> Option<&crate::model::MemberIndex> {
+        self.workspace
+            .members
+            .iter()
+            .filter(|member| {
+                let rel = member.relative_path.to_string_lossy();
+                rel == "." || path == rel || path.starts_with(&format!("{rel}/"))
+            })
+            .max_by_key(|member| member.relative_path.components().count())
+    }
+
+    fn unique_generated_page_id(&self, group_key: &str, used_ids: &mut HashSet<String>) -> String {
+        let base = page::sanitize_id(&format!("mod-{}", group_key.replace('/', "-")));
+        let mut candidate = if base.is_empty() {
+            "mod-coverage".to_string()
+        } else {
+            base
+        };
+        let mut suffix = 2usize;
+        while !used_ids.insert(candidate.clone()) {
+            candidate = format!(
+                "{}-{}",
+                candidate.trim_end_matches(|c: char| c.is_ascii_digit() || c == '-'),
+                suffix
+            );
+            suffix += 1;
+        }
+        candidate
+    }
+
+    fn humanize_group_key(&self, group_key: &str) -> String {
+        group_key
+            .split('/')
+            .map(|part| {
+                part.split(['-', '_'])
+                    .filter(|s| !s.is_empty())
+                    .map(|word| {
+                        let mut chars = word.chars();
+                        match chars.next() {
+                            Some(first) => {
+                                first.to_uppercase().collect::<String>() + chars.as_str()
+                            }
+                            None => String::new(),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect::<Vec<_>>()
+            .join(" / ")
+    }
+
+    fn resolve_source_files(&self, source_files: &[String]) -> Vec<String> {
+        let mut resolved = Vec::new();
+        let mut seen = HashSet::new();
+
+        for source in source_files {
+            let source = source.trim();
+            if source.is_empty() {
+                continue;
+            }
+
+            for path in self.match_source_pattern(source) {
+                if seen.insert(path.clone()) {
+                    resolved.push(path);
+                }
+            }
+        }
+
+        resolved
+    }
+
+    fn match_source_pattern(&self, pattern: &str) -> Vec<String> {
+        for candidate in self.source_pattern_candidates(pattern) {
+            let has_glob = candidate.contains('*')
+                || candidate.contains('?')
+                || candidate.contains('[')
+                || candidate.contains('{');
+
+            if !candidate.contains('/') && !has_glob {
+                let matches: Vec<String> = self
+                    .workspace_paths
+                    .iter()
+                    .filter(|path| *path == &candidate || path.ends_with(&format!("/{candidate}")))
+                    .cloned()
+                    .collect();
+                if !matches.is_empty() {
+                    return matches;
+                }
+                continue;
+            }
+
+            if self.workspace_paths.iter().any(|path| path == &candidate) {
+                return vec![candidate];
+            }
+
+            let mut matches = Vec::new();
+            let matcher = compile_source_glob(&candidate);
+
+            for path in &self.workspace_paths {
+                let is_match = if let Some(matcher) = &matcher {
+                    matcher.is_match(path)
+                } else if candidate.contains('/') {
+                    path == &candidate
+                } else {
+                    path == &candidate || path.ends_with(&format!("/{candidate}"))
+                };
+
+                if is_match {
+                    matches.push(path.clone());
+                }
+            }
+
+            if !matches.is_empty() {
+                return matches;
+            }
+        }
+
+        eprintln!(
+            "Warning: wiki plan source entry did not match indexed files: {}",
+            pattern
+        );
+        Vec::new()
+    }
+
+    fn source_pattern_candidates(&self, pattern: &str) -> Vec<String> {
+        let mut candidates = vec![pattern.to_string()];
+
+        for member in &self.workspace.members {
+            let prefix = format!("{}/", member.name);
+            if let Some(rest) = pattern.strip_prefix(&prefix) {
+                let mapped = if member.relative_path == Path::new(".") {
+                    rest.to_string()
+                } else {
+                    format!("{}/{}", member.relative_path.to_string_lossy(), rest)
+                };
+                if !candidates.contains(&mapped) {
+                    candidates.push(mapped);
+                }
+            }
+        }
+
+        candidates
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -899,67 +1201,145 @@ const PLANNING_CONTEXT_CHAR_LIMIT: usize = 100_000;
 pub(crate) fn build_planning_context(workspace: &WorkspaceIndex) -> String {
     let mut ctx = String::new();
     let mut truncated = false;
+    let limit = PLANNING_CONTEXT_CHAR_LIMIT;
 
     ctx.push_str("# Codebase Structural Index\n\n");
 
-    for member in &workspace.members {
+    'members: for member in &workspace.members {
         if workspace.members.len() > 1 {
-            ctx.push_str(&format!("## Workspace member: {}\n\n", member.name));
+            let header = format!("## Workspace member: {}\n\n", member.name);
+            if !try_push(&mut ctx, &header, limit) {
+                if !truncated {
+                    truncated = true;
+                    warn_context_truncated("planning", limit);
+                }
+                break 'members;
+            }
         }
 
         // Directory tree
-        ctx.push_str("### Directory Tree\n```\n");
-        format_tree(&member.index.tree, &mut ctx);
-        ctx.push_str("```\n\n");
+        let mut tree_section = String::from("### Directory Tree\n```\n");
+        format_tree(&member.index.tree, &mut tree_section);
+        tree_section.push_str("```\n\n");
+        if !try_push(&mut ctx, &tree_section, limit) {
+            if !truncated {
+                truncated = true;
+                warn_context_truncated("planning", limit);
+            }
+            break 'members;
+        }
 
         // Per-file summaries (compact)
-        ctx.push_str("### Files\n\n");
+        if !try_push(&mut ctx, "### Files\n\n", limit) {
+            if !truncated {
+                truncated = true;
+                warn_context_truncated("planning", limit);
+            }
+            break 'members;
+        }
         for file in &member.index.files {
             let path = file.path.to_string_lossy();
             let decl_count = count_declarations(&file.declarations);
             let public_count = count_public(&file.declarations);
 
-            ctx.push_str(&format!(
+            let summary = format!(
                 "**{}** ({}, {} lines, {} decls, {} public)\n",
                 path,
                 file.language.name(),
                 file.lines,
                 decl_count,
                 public_count,
-            ));
-
-            // Skip declaration listings once we exceed the budget
-            if ctx.len() < PLANNING_CONTEXT_CHAR_LIMIT {
-                // List top-level declarations (name + kind only for planning)
-                for decl in &file.declarations {
-                    ctx.push_str(&format!("  - {} `{}`", decl.kind, decl.name,));
-                    if !decl.children.is_empty() {
-                        ctx.push_str(&format!(" ({} children)", decl.children.len()));
-                    }
-                    ctx.push('\n');
+            );
+            if !try_push(&mut ctx, &summary, limit) {
+                if !truncated {
+                    truncated = true;
+                    warn_context_truncated("planning", limit);
                 }
-            } else if !truncated {
-                truncated = true;
-                eprintln!(
-                    "Warning: planning context exceeds {}k chars, \
-                     omitting declaration details for remaining files",
-                    PLANNING_CONTEXT_CHAR_LIMIT / 1000
-                );
+                break 'members;
             }
-            ctx.push('\n');
+
+            // List top-level declarations (name + kind only for planning)
+            for decl in &file.declarations {
+                let mut line = format!("  - {} `{}`", decl.kind, decl.name,);
+                if !decl.children.is_empty() {
+                    line.push_str(&format!(" ({} children)", decl.children.len()));
+                }
+                line.push('\n');
+                if !try_push(&mut ctx, &line, limit) {
+                    if !truncated {
+                        truncated = true;
+                        warn_context_truncated("planning", limit);
+                    }
+                    break 'members;
+                }
+            }
+
+            if !try_push(&mut ctx, "\n", limit) {
+                if !truncated {
+                    truncated = true;
+                    warn_context_truncated("planning", limit);
+                }
+                break 'members;
+            }
         }
     }
 
     // Stats
-    ctx.push_str(&format!(
+    let stats_header = format!(
         "### Stats\n- Total files: {}\n- Total lines: {}\n",
         workspace.stats.total_files, workspace.stats.total_lines,
-    ));
-    for (lang, count) in &workspace.stats.languages {
-        ctx.push_str(&format!("- {}: {} files\n", lang, count));
+    );
+    if try_push(&mut ctx, &stats_header, limit) {
+        for (lang, count) in &workspace.stats.languages {
+            let line = format!("- {}: {} files\n", lang, count);
+            if !try_push(&mut ctx, &line, limit) {
+                if !truncated {
+                    warn_context_truncated("planning", limit);
+                }
+                break;
+            }
+        }
     }
 
     ctx
+}
+
+fn try_push(out: &mut String, text: &str, limit: usize) -> bool {
+    if out.len() + text.len() > limit {
+        return false;
+    }
+    out.push_str(text);
+    true
+}
+
+fn compile_source_glob(pattern: &str) -> Option<globset::GlobMatcher> {
+    if !pattern.contains('*')
+        && !pattern.contains('?')
+        && !pattern.contains('[')
+        && !pattern.contains('{')
+    {
+        return None;
+    }
+
+    let effective = if !pattern.contains('/') {
+        format!("**/{pattern}")
+    } else {
+        pattern.to_string()
+    };
+
+    GlobBuilder::new(&effective)
+        .literal_separator(true)
+        .build()
+        .ok()
+        .map(|glob| glob.compile_matcher())
+}
+
+fn warn_context_truncated(kind: &str, limit: usize) {
+    eprintln!(
+        "Warning: {} context exceeds {}k chars, truncating remaining content",
+        kind,
+        limit / 1000
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1166,6 +1546,13 @@ pub(crate) fn extract_wiki_links(content: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    use crate::languages::Language;
+    use crate::model::declarations::{DeclKind, Declaration, Visibility};
+    use crate::model::{CodebaseIndex, FileIndex, IndexStats, MemberIndex, WorkspaceIndex};
+    use crate::workspace::WorkspaceKind;
 
     #[test]
     fn test_extract_json_plain() {
@@ -1208,6 +1595,280 @@ mod tests {
         assert_eq!(floor_char_boundary(s, 4), 3);
         assert_eq!(floor_char_boundary(s, 5), 5); // full string
         assert_eq!(floor_char_boundary(s, 10), 5); // beyond end
+    }
+
+    #[test]
+    fn test_build_planning_context_respects_hard_limit() {
+        let declarations: Vec<Declaration> = (0..150)
+            .map(|i| {
+                Declaration::new(
+                    DeclKind::Function,
+                    format!("very_long_function_name_{i:03}"),
+                    format!("fn very_long_function_name_{i:03}()"),
+                    Visibility::Public,
+                    i + 1,
+                )
+            })
+            .collect();
+
+        let files: Vec<FileIndex> = (0..400)
+            .map(|i| FileIndex {
+                path: PathBuf::from(format!("src/module_{i:03}.rs")),
+                language: Language::Rust,
+                size: 10_000,
+                lines: 500,
+                imports: Vec::new(),
+                declarations: declarations.clone(),
+            })
+            .collect();
+
+        let index = CodebaseIndex {
+            root: PathBuf::from("/tmp/project"),
+            root_name: "project".to_string(),
+            generated_at: "now".to_string(),
+            tree: Vec::new(),
+            stats: IndexStats {
+                total_files: files.len(),
+                total_lines: files.iter().map(|f| f.lines).sum(),
+                languages: HashMap::from([("rust".to_string(), files.len())]),
+                duration_ms: 0,
+            },
+            files,
+        };
+
+        let workspace = WorkspaceIndex {
+            root: PathBuf::from("/tmp/project"),
+            root_name: "project".to_string(),
+            workspace_kind: WorkspaceKind::None,
+            generated_at: "now".to_string(),
+            stats: index.stats.clone(),
+            members: vec![MemberIndex {
+                name: "project".to_string(),
+                relative_path: PathBuf::from("."),
+                index,
+            }],
+        };
+
+        let context = build_planning_context(&workspace);
+        assert!(context.len() <= PLANNING_CONTEXT_CHAR_LIMIT);
+    }
+
+    #[test]
+    fn test_resolve_source_files_expands_globs_and_filenames() {
+        let files = vec![
+            FileIndex {
+                path: PathBuf::from("Cargo.toml"),
+                language: Language::Toml,
+                size: 100,
+                lines: 10,
+                imports: Vec::new(),
+                declarations: Vec::new(),
+            },
+            FileIndex {
+                path: PathBuf::from("crates/core/Cargo.toml"),
+                language: Language::Toml,
+                size: 100,
+                lines: 10,
+                imports: Vec::new(),
+                declarations: Vec::new(),
+            },
+            FileIndex {
+                path: PathBuf::from("apps/web/src/app.ts"),
+                language: Language::TypeScript,
+                size: 100,
+                lines: 10,
+                imports: Vec::new(),
+                declarations: Vec::new(),
+            },
+            FileIndex {
+                path: PathBuf::from("apps/web/src/view.jsx"),
+                language: Language::JavaScript,
+                size: 100,
+                lines: 10,
+                imports: Vec::new(),
+                declarations: Vec::new(),
+            },
+        ];
+
+        let index = CodebaseIndex {
+            root: PathBuf::from("/tmp/project"),
+            root_name: "project".to_string(),
+            generated_at: "now".to_string(),
+            tree: Vec::new(),
+            stats: IndexStats {
+                total_files: files.len(),
+                total_lines: files.iter().map(|f| f.lines).sum(),
+                languages: HashMap::from([
+                    ("toml".to_string(), 2),
+                    ("typescript".to_string(), 1),
+                    ("javascript".to_string(), 1),
+                ]),
+                duration_ms: 0,
+            },
+            files,
+        };
+
+        let workspace = WorkspaceIndex {
+            root: PathBuf::from("/tmp/project"),
+            root_name: "project".to_string(),
+            workspace_kind: WorkspaceKind::None,
+            generated_at: "now".to_string(),
+            stats: index.stats.clone(),
+            members: vec![MemberIndex {
+                name: "project".to_string(),
+                relative_path: PathBuf::from("."),
+                index,
+            }],
+        };
+
+        let llm = crate::llm::LlmClient::from_command("cat".to_string(), None);
+        let generator = WikiGenerator::new(&llm, &workspace);
+        let resolved = generator.resolve_source_files(&[
+            "Cargo.toml".to_string(),
+            "apps/web/src/**/*.{ts,jsx}".to_string(),
+        ]);
+
+        assert_eq!(
+            resolved,
+            vec![
+                "Cargo.toml".to_string(),
+                "crates/core/Cargo.toml".to_string(),
+                "apps/web/src/app.ts".to_string(),
+                "apps/web/src/view.jsx".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_augment_plan_coverage_creates_page_for_uncovered_group() {
+        let files = vec![
+            FileIndex {
+                path: PathBuf::from("apps/api/src/main.rs"),
+                language: Language::Rust,
+                size: 100,
+                lines: 50,
+                imports: Vec::new(),
+                declarations: Vec::new(),
+            },
+            FileIndex {
+                path: PathBuf::from("extensions/pi-permission-system/index.ts"),
+                language: Language::TypeScript,
+                size: 100,
+                lines: 200,
+                imports: Vec::new(),
+                declarations: Vec::new(),
+            },
+            FileIndex {
+                path: PathBuf::from("extensions/pi-permission-system/src/common.ts"),
+                language: Language::TypeScript,
+                size: 100,
+                lines: 180,
+                imports: Vec::new(),
+                declarations: Vec::new(),
+            },
+            FileIndex {
+                path: PathBuf::from("extensions/pi-permission-system/src/status.ts"),
+                language: Language::TypeScript,
+                size: 100,
+                lines: 170,
+                imports: Vec::new(),
+                declarations: Vec::new(),
+            },
+        ];
+
+        let index = CodebaseIndex {
+            root: PathBuf::from("/tmp/project"),
+            root_name: "project".to_string(),
+            generated_at: "now".to_string(),
+            tree: Vec::new(),
+            stats: IndexStats {
+                total_files: files.len(),
+                total_lines: files.iter().map(|f| f.lines).sum(),
+                languages: HashMap::new(),
+                duration_ms: 0,
+            },
+            files,
+        };
+
+        let workspace = WorkspaceIndex {
+            root: PathBuf::from("/tmp/project"),
+            root_name: "project".to_string(),
+            workspace_kind: WorkspaceKind::None,
+            generated_at: "now".to_string(),
+            stats: index.stats.clone(),
+            members: vec![MemberIndex {
+                name: "project".to_string(),
+                relative_path: PathBuf::from("."),
+                index,
+            }],
+        };
+
+        let llm = crate::llm::LlmClient::from_command("cat".to_string(), None);
+        let generator = WikiGenerator::new(&llm, &workspace);
+        let plans = generator.augment_plan_coverage(vec![
+            PagePlan {
+                id: "architecture".to_string(),
+                page_type: PageType::Architecture,
+                title: "Architecture".to_string(),
+                source_files: vec!["apps/api/src/main.rs".to_string()],
+            },
+            PagePlan {
+                id: "index".to_string(),
+                page_type: PageType::Index,
+                title: "Index".to_string(),
+                source_files: Vec::new(),
+            },
+        ]);
+
+        let extension_plan = plans
+            .iter()
+            .find(|plan| plan.id.starts_with("mod-extensions-pi-permission-system"))
+            .expect("expected coverage repair page");
+        assert_eq!(extension_plan.source_files.len(), 3);
+    }
+
+    #[test]
+    fn test_resolve_source_files_accepts_member_name_prefixes() {
+        let files = vec![FileIndex {
+            path: PathBuf::from("src/main.rs"),
+            language: Language::Rust,
+            size: 100,
+            lines: 10,
+            imports: Vec::new(),
+            declarations: Vec::new(),
+        }];
+
+        let index = CodebaseIndex {
+            root: PathBuf::from("/tmp/project"),
+            root_name: "project".to_string(),
+            generated_at: "now".to_string(),
+            tree: Vec::new(),
+            stats: IndexStats {
+                total_files: files.len(),
+                total_lines: 10,
+                languages: HashMap::new(),
+                duration_ms: 0,
+            },
+            files,
+        };
+
+        let workspace = WorkspaceIndex {
+            root: PathBuf::from("/tmp/project"),
+            root_name: "project".to_string(),
+            workspace_kind: WorkspaceKind::Cargo,
+            generated_at: "now".to_string(),
+            stats: index.stats.clone(),
+            members: vec![MemberIndex {
+                name: "agenctl".to_string(),
+                relative_path: PathBuf::from("."),
+                index,
+            }],
+        };
+
+        let llm = crate::llm::LlmClient::from_command("cat".to_string(), None);
+        let generator = WikiGenerator::new(&llm, &workspace);
+        let resolved = generator.resolve_source_files(&["agenctl/src/main.rs".to_string()]);
+        assert_eq!(resolved, vec!["src/main.rs".to_string()]);
     }
 
     #[test]

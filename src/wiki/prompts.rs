@@ -21,6 +21,7 @@ Rules:
 5. Always create exactly ONE "index" page (id: "index") with empty source_files
 6. Every source file should appear in at least one page's source_files
 7. Keep the total page count reasonable: aim for 5-20 pages for a typical project
+8. `source_files` must contain concrete repo-relative file paths only. Do NOT use glob patterns, directories, placeholders, or invented paths.
 
 Output ONLY the JSON array, no explanation or markdown fencing."#
 }

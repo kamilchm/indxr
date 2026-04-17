@@ -148,6 +148,8 @@ indxr wiki <ACTION> [PATH] [OPTIONS]
 - `generate` — Generate the wiki from scratch
 - `update` — Update wiki pages affected by recent code changes
 - `status` — Show wiki status (page count, staleness, coverage)
+- `members` — List workspace members that would be included in wiki generation
+- `preflight` — Inspect included files, groups, and bottlenecks before generation
 - `compound <FILE>` — Compound synthesized knowledge into the wiki from a file or stdin (`-`)
 
 **Shared options:**
@@ -192,6 +194,12 @@ indxr wiki update --since main
 
 # Check wiki health
 indxr wiki status
+
+# See which workspace members would be included
+indxr wiki members
+
+# Inspect included files and bottlenecks before generation
+indxr wiki preflight
 
 # Compound knowledge from a file
 indxr wiki compound notes.txt

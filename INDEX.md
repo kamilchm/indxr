@@ -1,24 +1,18 @@
 # Codebase Index: indxr
 
-> Generated: 2026-04-07 13:02:31 UTC | Files: 77 | Lines: 46310
-> Languages: JSON (4), Markdown (18), Python (2), Rust (51), Shell (1), TOML (1)
+> Generated: 2026-04-17 10:18:39 UTC | Files: 68 | Lines: 41518
+> Languages: Markdown (15), Rust (51), TOML (1), YAML (1)
 
 ## Directory Structure
 
 ```
 indxr/
+  CHANGELOG.md
   CLAUDE.md
   Cargo.toml
   INDEX.md
   README.md
-  accuracy_bench.py
-  accuracy_questions.json
-  bench_questions/
-    indxr.json
-  benchmark.md
-  benchmark.sh
-  benchmark_results.json
-  benchmark_results_v2.json
+  devenv.yaml
   docs/
     agent-integration.md
     caching.md
@@ -31,8 +25,6 @@ indxr/
     output-formats.md
     token-budget.md
     wiki.md
-  plan.md
-  roadmap.md
   src/
     budget.rs
     cache/
@@ -95,13 +87,14 @@ indxr/
     workspace.rs
   tests/
     wiki_integration.rs
-  token_count.py
-  wiki-plan.md
 ```
 
 ---
 
 ## Public API Surface
+
+**CHANGELOG.md**
+- `# Changelog`
 
 **CLAUDE.md**
 - `# indxr`
@@ -137,104 +130,24 @@ indxr/
 
 **README.md**
 - `# indxr`
-- `# With wiki support:`
+- `# Wiki — the core workflow`
+- `# MCP server — live queries + wiki tools for AI agents`
+- `# Structural indexing`
+- `# Setup`
 - `# Codebase Index: my-project`
 
-**accuracy_bench.py**
-- `DEFAULT_MODEL = "claude-sonnet-4-6"`
-- `DEFAULT_QUESTIONS = "accuracy_questions.json"`
-- `DEFAULT_OUTPUT = "benchmark_results.json"`
-- `API_DELAY = 0.5`
-- `SYSTEM_PROMPT = ( "You are answering a question about a codebase. " "Answer concisely and precisely. Be specific — include file paths, " "function names, types, and other concrete details. " "Do not hedge or speculate. If the provided context does not contain " "enough information to answer, say so." )`
-- `class IndxrMCP`
-- `def build_baseline_context(question: dict, repo_path: Path) -> str`
-- `def build_indxr_context(question: dict, mcp: IndxrMCP) -> str`
-- `def score_answer(question: dict, answer: str) -> float`
-- `def ask_claude(client, model: str, context: str, question: str) -> tuple`
-- `@dataclass class QuestionResult`
-- `def print_results(results: list, model: str)`
-- `def write_json_results(results: list, metadata: dict, output_path: str)`
-- `def dry_run(questions: list, repo_path: Path, mcp: IndxrMCP)`
-- `def main()`
-
-**accuracy_questions.json**
-- `"version": 1`
-- `"description": "indxr accuracy benchmark: measures LLM answer quality with full-file context vs indxr structural context"`
-- `"questions": [`
-
-**bench_questions/indxr.json**
-- `"version": 2`
-- `"description": "indxr accuracy benchmark v2: agent-loop comparison on indxr's own codebase"`
-- `"repo": "self"`
-- `"questions": [`
-
-**benchmark.md**
-- `# Benchmarks`
-- `# Python environment (first time only)`
-- `# Benchmark the current project (defaults to cwd)`
-- `# Benchmark specific projects`
-- `# With Claude token counts (set your key first)`
-- `# Set your API key`
-- `# Full benchmark (3 runs, ~$15-25)`
-- `# Quick single run (~$5-8)`
-- `# Dry run — show tools and questions without API calls (free)`
-- `# Run one category`
-- `# Run one question`
-- `# Verbose — show agent tool traces and answers`
-- `# External repo`
-- `# Different model`
-- `# One-time setup`
-- `# Token efficiency (no API key needed if tiktoken is installed)`
-- `# Accuracy v2 — quick single run (~$5-8)`
-- `# Accuracy v2 — full with statistical rigor (~$15-25)`
-
-**benchmark.sh**
-- `show_help()`
-- `count_tokens_openai()`
-- `count_tokens_claude()`
-- `_fallback_count()`
-- `compute_stats()`
-- `fmt_stats()`
-- `stat_field()`
-- `fmt_num()`
-- `pct()`
-- `ratio()`
-- `sep()`
-- `section()`
-- `progress_dot()`
-- `progress_done()`
-- `_time_indxr()`
-- `run_indxr_multi()`
-- `run_indxr_cold_multi()`
-- `run_indxr_warm_multi()`
-- `mcp_query()`
-- `fmt_tok()`
-- `detect_environment()`
-- `json_add_project()`
-- `benchmark_project()`
-- `print()`
-- `print()`
-- `print()`
-
-**benchmark_results.json**
-- `"metadata": {`
-- `"results": [`
-- `"summary": {`
-
-**benchmark_results_v2.json**
-- `"metadata": {`
-- `"summary": {`
-- `"per_question": [`
-- `"runs": [`
+**devenv.yaml**
+- `inputs:`
+- `allowUnfree:`
 
 **docs/agent-integration.md**
 - `# Agent Integration Guide`
-- `# Full structured index`
-- `# Pipe to your agent`
 - `# Build with wiki support`
 - `# Generate the wiki (requires LLM — set ANTHROPIC_API_KEY or OPENAI_API_KEY)`
 - `# Or let an agent generate it via MCP (no API key needed — the agent IS the LLM)`
 - `# Agent calls wiki_generate, plans pages, then wiki_contribute for each`
+- `# Full structured index`
+- `# Pipe to your agent`
 - `# Generate a scoped index for the area you're working in`
 - `# Show structural changes since the last release`
 - `# Show what changed on this branch`
@@ -265,6 +178,8 @@ indxr/
 - `# Update wiki after code changes`
 - `# Update wiki based on changes since a specific ref`
 - `# Check wiki health`
+- `# See which workspace members would be included`
+- `# Inspect included files and bottlenecks before generation`
 - `# Compound knowledge from a file`
 - `# Compound from stdin with source page references`
 - `# Use external LLM command`
@@ -422,6 +337,7 @@ indxr/
 - `# Use an external command as the LLM backend`
 - `# Update based on changes since a specific ref`
 - `# Update with a specific model`
+- `# Preflight with explicit exclusions`
 - `# From a file`
 - `# From stdin`
 - `# With source page references`
@@ -429,13 +345,6 @@ indxr/
 - `# Parser Module`
 - `# Option 1: Don't commit (regenerate per-developer)`
 - `# Option 2: Commit (shared team knowledge)`
-
-**plan.md**
-- `# ⚠️  DO NOT COMMIT OR PUSH THIS FILE — local planning only ⚠️`
-- `# Plan: Adapt cx Ideas into indxr`
-
-**roadmap.md**
-- `# indxr Roadmap`
 
 **src/budget.rs**
 - `pub fn estimate_tokens(text: &str) -> usize`
@@ -755,16 +664,13 @@ indxr/
 - `pub fn detect_workspace(root: &Path) -> Result<Workspace>`
 - `pub fn single_root_workspace(root: &Path) -> Workspace`
 
-**token_count.py**
-- `def count_openai(text: str) -> int | None`
-- `def count_claude(text: str) -> int | None`
-- `def main()`
+---
 
-**wiki-plan.md**
-- `# Wiki Feature — Phase 2 & 3 Plan`
-- `# Current Wiki Page`
-- `# Structural Changes Since <old_ref>`
-- `# Fresh Structural Data`
+## CHANGELOG.md
+
+**Language:** Markdown | **Size:** 990 B | **Lines:** 16
+
+**Declarations:**
 
 ---
 
@@ -799,7 +705,7 @@ indxr/
 
 ## INDEX.md
 
-**Language:** Markdown | **Size:** 92.5 KB | **Lines:** 3323
+**Language:** Markdown | **Size:** 88.2 KB | **Lines:** 3124
 
 **Declarations:**
 
@@ -807,75 +713,15 @@ indxr/
 
 ## README.md
 
-**Language:** Markdown | **Size:** 14.8 KB | **Lines:** 330
+**Language:** Markdown | **Size:** 14.7 KB | **Lines:** 336
 
 **Declarations:**
 
 ---
 
-## accuracy_bench.py
+## devenv.yaml
 
-**Language:** Python | **Size:** 17.8 KB | **Lines:** 502
-
-**Imports:**
-- `import argparse`
-- `import json`
-- `import os`
-- `import subprocess`
-- `import sys`
-- `import time`
-- `from dataclasses import dataclass, field, asdict`
-- `from pathlib import Path`
-
-**Declarations:**
-
-`def _find_indxr() -> str`
-
----
-
-## accuracy_questions.json
-
-**Language:** JSON | **Size:** 12.5 KB | **Lines:** 267
-
-**Declarations:**
-
----
-
-## bench_questions/indxr.json
-
-**Language:** JSON | **Size:** 22.0 KB | **Lines:** 437
-
-**Declarations:**
-
----
-
-## benchmark.md
-
-**Language:** Markdown | **Size:** 10.1 KB | **Lines:** 260
-
-**Declarations:**
-
----
-
-## benchmark.sh
-
-**Language:** Shell | **Size:** 39.5 KB | **Lines:** 1065
-
-**Declarations:**
-
----
-
-## benchmark_results.json
-
-**Language:** JSON | **Size:** 26.4 KB | **Lines:** 321
-
-**Declarations:**
-
----
-
-## benchmark_results_v2.json
-
-**Language:** JSON | **Size:** 400.6 KB | **Lines:** 2557
+**Language:** YAML | **Size:** 187 B | **Lines:** 7
 
 **Declarations:**
 
@@ -883,7 +729,7 @@ indxr/
 
 ## docs/agent-integration.md
 
-**Language:** Markdown | **Size:** 20.5 KB | **Lines:** 566
+**Language:** Markdown | **Size:** 21.1 KB | **Lines:** 564
 
 **Declarations:**
 
@@ -899,7 +745,7 @@ indxr/
 
 ## docs/cli-reference.md
 
-**Language:** Markdown | **Size:** 15.8 KB | **Lines:** 538
+**Language:** Markdown | **Size:** 16.2 KB | **Lines:** 546
 
 **Declarations:**
 
@@ -939,7 +785,7 @@ indxr/
 
 ## docs/mcp-server.md
 
-**Language:** Markdown | **Size:** 33.0 KB | **Lines:** 973
+**Language:** Markdown | **Size:** 33.2 KB | **Lines:** 973
 
 **Declarations:**
 
@@ -963,23 +809,7 @@ indxr/
 
 ## docs/wiki.md
 
-**Language:** Markdown | **Size:** 8.6 KB | **Lines:** 247
-
-**Declarations:**
-
----
-
-## plan.md
-
-**Language:** Markdown | **Size:** 8.9 KB | **Lines:** 216
-
-**Declarations:**
-
----
-
-## roadmap.md
-
-**Language:** Markdown | **Size:** 2.9 KB | **Lines:** 58
+**Language:** Markdown | **Size:** 9.7 KB | **Lines:** 281
 
 **Declarations:**
 
@@ -1073,7 +903,7 @@ indxr/
 
 ## src/cli.rs
 
-**Language:** Rust | **Size:** 13.3 KB | **Lines:** 464
+**Language:** Rust | **Size:** 14.2 KB | **Lines:** 496
 
 **Imports:**
 - `std::path::PathBuf`
@@ -1236,12 +1066,12 @@ indxr/
 
 ## src/indexer.rs
 
-**Language:** Rust | **Size:** 10.7 KB | **Lines:** 346
+**Language:** Rust | **Size:** 14.0 KB | **Lines:** 459
 
 **Imports:**
 - `std::collections::HashMap`
 - `std::fs`
-- `std::path::PathBuf`
+- `std::path::{Path, PathBuf}`
 - `rayon::prelude::*`
 - `crate::cache::Cache`
 - `crate::model::{CodebaseIndex, FileIndex, IndexStats, MemberIndex, WorkspaceIndex}`
@@ -1253,7 +1083,13 @@ indxr/
 
 **Declarations:**
 
+`fn member_specific_excludes( member: &workspace::WorkspaceMember, workspace: &Workspace, ) -> Vec<String>`
+
+`fn normalize_member_index_paths(index: &mut CodebaseIndex, member_relative_path: &Path)`
+
 `fn aggregate_stats(members: &[MemberIndex], duration: std::time::Duration) -> IndexStats`
+
+`mod tests`
 
 ---
 
@@ -3006,20 +2842,20 @@ indxr/
 
 ## src/wiki/generate.rs
 
-**Language:** Rust | **Size:** 45.6 KB | **Lines:** 1291
+**Language:** Rust | **Size:** 67.6 KB | **Lines:** 1952
 
 **Imports:**
 - `std::collections::{HashMap, HashSet}`
 - `std::path::{Path, PathBuf}`
 - `std::process::Command`
 - `anyhow::{Context, Result}`
+- `globset::GlobBuilder`
 - `serde::Deserialize`
 - `crate::diff`
 - `crate::languages::Language`
 - `crate::llm::{LlmClient, Message, Role}`
 - `crate::model::declarations::{Declaration, Visibility}`
-- `crate::model::{FileIndex, TreeEntry, WorkspaceIndex}`
-- *... and 4 more imports*
+- *... and 5 more imports*
 
 **Declarations:**
 
@@ -3036,6 +2872,8 @@ indxr/
   `pub fn new(llm: &'a LlmClient, workspace: &'a WorkspaceIndex) -> Self`
 
   `fn build_file_index( workspace: &'a WorkspaceIndex, ) -> HashMap<String, Vec<(&'a FileIndex, String)>>`
+
+  `fn collect_workspace_paths(workspace: &'a WorkspaceIndex) -> Vec<String>`
 
   `pub async fn generate_full(&self, wiki_dir: &Path, dry_run: bool) -> Result<WikiStore>`
 
@@ -3061,10 +2899,34 @@ indxr/
 
   `fn find_file(&self, path: &str) -> Option<&'a FileIndex>`
 
+  `fn augment_plan_coverage(&self, mut plans: Vec<PagePlan>) -> Vec<PagePlan>`
+
+  `fn find_best_plan_for_group(&self, plans: &[PagePlan], group_key: &str) -> Option<usize>`
+
+  `fn coverage_group_key(&self, path: &str) -> String`
+
+  `fn owning_member(&self, path: &str) -> Option<&crate::model::MemberIndex>`
+
+  `fn unique_generated_page_id(&self, group_key: &str, used_ids: &mut HashSet<String>) -> String`
+
+  `fn humanize_group_key(&self, group_key: &str) -> String`
+
+  `fn resolve_source_files(&self, source_files: &[String]) -> Vec<String>`
+
+  `fn match_source_pattern(&self, pattern: &str) -> Vec<String>`
+
+  `fn source_pattern_candidates(&self, pattern: &str) -> Vec<String>`
+
 
 `const PLANNING_CONTEXT_CHAR_LIMIT: usize = 100_000`
 
 `pub(crate) fn build_planning_context(workspace: &WorkspaceIndex) -> String`
+
+`fn try_push(out: &mut String, text: &str, limit: usize) -> bool`
+
+`fn compile_source_glob(pattern: &str) -> Option<globset::GlobMatcher>`
+
+`fn warn_context_truncated(kind: &str, limit: usize)`
 
 `fn format_tree(entries: &[TreeEntry], out: &mut String)`
 
@@ -3090,7 +2952,7 @@ indxr/
 
 ## src/wiki/mod.rs
 
-**Language:** Rust | **Size:** 17.2 KB | **Lines:** 536
+**Language:** Rust | **Size:** 31.8 KB | **Lines:** 1001
 
 **Imports:**
 - `pub(crate) use generate::UpdateResult`
@@ -3114,7 +2976,28 @@ indxr/
 `pub(crate) struct WikiHealthReport`
 > Fields: `pages: usize`, `pages_by_type: HashMap<String, usize>`, `generated_at_ref: String`, `generated_at: String`, `commits_behind: usize`, `staleness: String`, `covered_files: usize`, `total_files: usize`, `coverage_pct: String`, `affected_pages: Vec<String>`, `uncovered_files: Vec<String>`
 
+`struct IncludedDirWarning`
+> Fields: `dir_name: &'static str`, `file_count: usize`, `examples: Vec<String>`
+
+`struct PreflightFileEntry`
+> Fields: `path: String`, `member_name: String`, `lines: usize`, `size: u64`, `declarations: usize`, `language: String`
+
+`struct PreflightGroupSummary`
+> Fields: `key: String`, `file_count: usize`, `total_lines: usize`, `total_size: u64`
+
 `pub(crate) fn compute_wiki_health( store: &store::WikiStore, workspace: &WorkspaceIndex, ) -> WikiHealthReport`
+
+`fn detect_suspicious_included_dirs(workspace: &WorkspaceIndex) -> Vec<IncludedDirWarning>`
+
+`fn warn_suspicious_included_dirs(workspace: &WorkspaceIndex)`
+
+`fn collect_preflight_files(workspace: &WorkspaceIndex) -> Vec<PreflightFileEntry>`
+
+`fn preflight_group_key(workspace: &WorkspaceIndex, path: &str) -> String`
+
+`fn summarize_preflight_groups( workspace: &WorkspaceIndex, files: &[PreflightFileEntry], ) -> Vec<PreflightGroupSummary>`
+
+`fn print_wiki_preflight(workspace: &WorkspaceIndex)`
 
 `pub(crate) struct CompoundResult`
 > Fields: `action: String`, `id: String`, `title: String`
@@ -3128,6 +3011,8 @@ indxr/
 `fn resolve_wiki_dir(override_dir: &Option<PathBuf>, workspace_root: &std::path::Path) -> PathBuf`
 
 `pub(crate) fn commits_behind(root: &std::path::Path, since_ref: &str) -> Result<usize>`
+
+`mod tests`
 
 ---
 
@@ -3177,7 +3062,7 @@ indxr/
 
 ## src/wiki/prompts.rs
 
-**Language:** Rust | **Size:** 6.6 KB | **Lines:** 127
+**Language:** Rust | **Size:** 6.7 KB | **Lines:** 128
 
 **Declarations:**
 
@@ -3269,7 +3154,7 @@ indxr/
 
 ## tests/wiki_integration.rs
 
-**Language:** Rust | **Size:** 12.5 KB | **Lines:** 421
+**Language:** Rust | **Size:** 15.4 KB | **Lines:** 512
 
 **Imports:**
 - `std::fs`
@@ -3292,6 +3177,12 @@ indxr/
 
 `fn test_wiki_status_no_wiki()`
 
+`fn test_wiki_members_lists_included_members()`
+
+`fn test_wiki_members_warns_about_node_modules()`
+
+`fn test_wiki_preflight_lists_groups_and_files()`
+
 `fn test_wiki_status_after_generate()`
 
 `fn test_wiki_update_after_code_change()`
@@ -3299,25 +3190,4 @@ indxr/
 `fn test_wiki_update_no_changes()`
 
 `fn test_mock_llm_script_returns_valid_plan()`
-
----
-
-## token_count.py
-
-**Language:** Python | **Size:** 2.9 KB | **Lines:** 89
-
-**Imports:**
-- `import sys`
-- `import os`
-- `import argparse`
-
-**Declarations:**
-
----
-
-## wiki-plan.md
-
-**Language:** Markdown | **Size:** 8.3 KB | **Lines:** 253
-
-**Declarations:**
 
